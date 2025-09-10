@@ -28,6 +28,11 @@ const EXTERNAL_WEBHOOK_TOKEN = process.env.EXTERNAL_WEBHOOK_TOKEN; // simple bea
 const PERSIST_PATH =
   process.env.PERSIST_PATH || path.join(__dirname, "storage.json");
 
+// GitHub Gist storage configuration
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // Personal access token for GitHub API
+const GIST_ID = process.env.GIST_ID; // ID of the Gist to use for storage
+const USE_GIST_STORAGE = process.env.USE_GIST_STORAGE === "true"; // Enable Gist storage
+
 if (
   !SLACK_SIGNING_SECRET ||
   !SLACK_BOT_TOKEN ||
@@ -43,8 +48,103 @@ if (
   process.exit(1);
 }
 
-// ---- Tiny persistence (JSON file) ----
-function loadStore() {
+// ---- GitHub Gist Storage Functions ----
+async function loadFromGist() {
+  if (!GITHUB_TOKEN || !GIST_ID) {
+    throw new Error("GitHub token or Gist ID not configured");
+  }
+
+  try {
+    const response = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      headers: {
+        Authorization: `token ${GITHUB_TOKEN}`,
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "Hypernative-Slack-Bot",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `GitHub API error: ${response.status} ${response.statusText}`
+      );
+    }
+
+    const gist = await response.json();
+    const content = gist.files["storage.json"]?.content;
+
+    if (!content) {
+      throw new Error("No storage.json file found in Gist");
+    }
+
+    const parsed = JSON.parse(content);
+    const store = {
+      destinations: parsed.destinations || {},
+      userTokens: parsed.userTokens || {},
+      tokenToUser: parsed.tokenToUser || {},
+      installations: parsed.installations || {},
+    };
+
+    console.log(
+      `📂 ✅ Loaded storage from Gist: ${
+        Object.keys(store.userTokens).length
+      } user tokens, ${Object.keys(store.destinations).length} destinations`
+    );
+    return store;
+  } catch (error) {
+    console.log(`📂 ❌ Failed to load from Gist: ${error.message}`);
+    throw error;
+  }
+}
+
+async function saveToGist(store) {
+  if (!GITHUB_TOKEN || !GIST_ID) {
+    throw new Error("GitHub token or Gist ID not configured");
+  }
+
+  try {
+    const content = JSON.stringify(store, null, 2);
+
+    const response = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `token ${GITHUB_TOKEN}`,
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "Hypernative-Slack-Bot",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        files: {
+          "storage.json": {
+            content: content,
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `GitHub API error: ${response.status} ${response.statusText}`
+      );
+    }
+
+    console.log(`📂 ✅ Saved storage to Gist successfully`);
+  } catch (error) {
+    console.log(`📂 ❌ Failed to save to Gist: ${error.message}`);
+    throw error;
+  }
+}
+
+// ---- Tiny persistence (JSON file or Gist) ----
+async function loadStore() {
+  if (USE_GIST_STORAGE) {
+    console.log(`📂 Loading storage from GitHub Gist: ${GIST_ID}`);
+    try {
+      return await loadFromGist();
+    } catch (error) {
+      console.log(`📂 ❌ Gist storage failed, falling back to local file`);
+    }
+  }
+
   console.log(`📂 Loading storage from: ${PERSIST_PATH}`);
 
   try {
@@ -91,7 +191,19 @@ function loadStore() {
     return newStore;
   }
 }
-function saveStore(store) {
+async function saveStore(store) {
+  if (USE_GIST_STORAGE) {
+    try {
+      await saveToGist(store);
+      return;
+    } catch (error) {
+      console.error(
+        `❌ Gist storage failed, falling back to local file:`,
+        error
+      );
+    }
+  }
+
   try {
     // Create backup before saving
     if (fs.existsSync(PERSIST_PATH)) {
@@ -120,7 +232,7 @@ function saveStore(store) {
     throw error;
   }
 }
-let STORE = loadStore();
+let STORE = null;
 
 // Validate and repair storage data
 function validateStorage(store) {
@@ -186,29 +298,107 @@ function validateStorage(store) {
   return store;
 }
 
-// Validate storage on startup
-STORE = validateStorage(STORE);
+// Initialize storage on startup
+async function initializeStorage() {
+  try {
+    STORE = await loadStore();
+    STORE = validateStorage(STORE);
+    console.log(`📂 Storage initialized successfully`);
+  } catch (error) {
+    console.error(`❌ Failed to initialize storage:`, error);
+    // Create empty store as fallback
+    STORE = {
+      destinations: {},
+      userTokens: {},
+      tokenToUser: {},
+      installations: {},
+    };
+  }
+}
 
 // Safe storage update function that automatically saves
-function updateStore(updateFn) {
+async function updateStore(updateFn) {
   try {
     updateFn(STORE);
-    saveStore(STORE);
+    await saveStore(STORE);
   } catch (error) {
     console.error(`❌ Failed to update storage:`, error);
     throw error;
   }
 }
 
+// Helper function to translate global user IDs to local IDs
+async function translateUserId(client, userId) {
+  if (!userId || !userId.startsWith("U") || userId.length <= 11) {
+    return userId; // Not a global ID or invalid format
+  }
+
+  try {
+    console.log(`🌍 Attempting to translate global user ID: ${userId}`);
+    const userInfo = await client.users.info({ user: userId });
+    if (userInfo.user && userInfo.user.id !== userId) {
+      console.log(
+        `🔄 Translated global ID ${userId} to local ID ${userInfo.user.id}`
+      );
+      return userInfo.user.id;
+    }
+    return userId; // No translation needed
+  } catch (userError) {
+    console.log(
+      `⚠️ Could not translate user ID ${userId}, using as-is:`,
+      userError.message
+    );
+    return userId; // Use original ID if translation fails
+  }
+}
+
+// Helper function to validate if a channel is accessible
+async function validateChannelAccess(client, channelId, workspaceToken = null) {
+  try {
+    const token = workspaceToken || SLACK_BOT_TOKEN;
+    const channelInfo = await client.conversations.info({
+      token: token,
+      channel: channelId,
+    });
+    return { accessible: true, channel: channelInfo.channel };
+  } catch (error) {
+    if (error.data && error.data.error === "channel_not_found") {
+      return { accessible: false, error: "channel_not_found" };
+    }
+    return { accessible: false, error: error.message };
+  }
+}
+
+// Helper function to get workspace-specific token
+function getWorkspaceToken(teamId) {
+  const workspaceData = workspaceTokens.get(teamId);
+  if (workspaceData && workspaceData.token) {
+    console.log(`🔑 Using workspace-specific token for team: ${teamId}`);
+    return workspaceData.token;
+  }
+
+  // Fallback to default token
+  console.log(
+    `⚠️ No workspace-specific token found for team: ${teamId}, using default token`
+  );
+  return SLACK_BOT_TOKEN;
+}
+
+// Helper function to create workspace-specific client
+function createWorkspaceClient(teamId) {
+  const token = getWorkspaceToken(teamId);
+  return new app.client.constructor({ token });
+}
+
 // Periodic auto-save to prevent data loss
 let lastSaveTime = Date.now();
 const AUTO_SAVE_INTERVAL = 30000; // 30 seconds
 
-setInterval(() => {
+setInterval(async () => {
   try {
     const now = Date.now();
     if (now - lastSaveTime >= AUTO_SAVE_INTERVAL) {
-      saveStore(STORE);
+      await saveStore(STORE);
       lastSaveTime = now;
       console.log(`🔄 Auto-save completed at ${new Date().toISOString()}`);
     }
@@ -218,10 +408,10 @@ setInterval(() => {
 }, AUTO_SAVE_INTERVAL);
 
 // Graceful shutdown handler
-process.on("SIGINT", () => {
+process.on("SIGINT", async () => {
   console.log("\n🛑 Received SIGINT, saving data before exit...");
   try {
-    saveStore(STORE);
+    await saveStore(STORE);
     console.log("✅ Data saved successfully");
   } catch (error) {
     console.error("❌ Failed to save data on exit:", error);
@@ -229,10 +419,10 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
-process.on("SIGTERM", () => {
+process.on("SIGTERM", async () => {
   console.log("\n🛑 Received SIGTERM, saving data before exit...");
   try {
-    saveStore(STORE);
+    await saveStore(STORE);
     console.log("✅ Data saved successfully");
   } catch (error) {
     console.error("❌ Failed to save data on exit:", error);
@@ -241,10 +431,10 @@ process.on("SIGTERM", () => {
 });
 
 // Handle uncaught exceptions - save data but don't crash
-process.on("uncaughtException", (error) => {
+process.on("uncaughtException", async (error) => {
   console.error("❌ Uncaught Exception:", error);
   try {
-    saveStore(STORE);
+    await saveStore(STORE);
     console.log("✅ Data saved after error");
   } catch (saveError) {
     console.error("❌ Failed to save data after error:", saveError);
@@ -253,10 +443,10 @@ process.on("uncaughtException", (error) => {
 });
 
 // Handle unhandled promise rejections - save data but don't crash
-process.on("unhandledRejection", (reason, promise) => {
+process.on("unhandledRejection", async (reason, promise) => {
   console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
   try {
-    saveStore(STORE);
+    await saveStore(STORE);
     console.log("✅ Data saved after rejection");
   } catch (saveError) {
     console.error("❌ Failed to save data after rejection:", saveError);
@@ -287,7 +477,7 @@ const fmtUTC = (iso) => {
   }
 };
 
-function getUserToken(userId) {
+async function getUserToken(userId) {
   // Ensure backward compatibility with existing storage
   if (!STORE.userTokens) STORE.userTokens = {};
   if (!STORE.tokenToUser) STORE.tokenToUser = {};
@@ -298,7 +488,7 @@ function getUserToken(userId) {
 
   // Generate new token for user
   const token = randomUUID();
-  updateStore((store) => {
+  await updateStore((store) => {
     store.userTokens[userId] = token;
     store.tokenToUser[token] = userId;
   });
@@ -306,58 +496,154 @@ function getUserToken(userId) {
   return token;
 }
 
-function getUserWebhookURL(userId, baseURL) {
-  const token = getUserToken(userId);
+async function getUserWebhookURL(userId, baseURL) {
+  const token = await getUserToken(userId);
   // Default to localhost for development, but allow override
   const defaultURL = process.env.BASE_URL || "http://localhost:3000";
   const finalURL = baseURL || defaultURL;
   return `${finalURL}/webhook/${token}`;
 }
 
-function ensureDestinationOrPrompt(userId, client) {
+async function ensureDestinationOrPrompt(userId, client) {
   const dest = STORE.destinations[userId];
   if (dest && dest.channel) return dest;
-  // DM the admin requesting setup
-  return client.conversations
-    .open({ users: userId })
-    .then(({ channel }) =>
-      client.chat.postMessage({
-        channel: channel.id,
-        text: "Hypernative setup required",
-        blocks: [
-          {
-            type: "header",
-            text: {
-              type: "plain_text",
-              text: "Set a destination thread for Hypernative alerts",
-            },
-          },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: "Choose a *channel* and (optional) existing *thread timestamp* where alerts should be posted.",
-            },
-          },
-          {
-            type: "actions",
-            elements: [
+
+  // Check if this is a global user from a different workspace
+  try {
+    const userInfo = await client.users.info({ user: userId });
+    const authTest = await client.auth.test();
+
+    if (userInfo.user.team_id !== authTest.team_id) {
+      console.log(
+        `🌍 Global user ${userId} from different workspace (${userInfo.user.team_id})`
+      );
+
+      // Try to use workspace-specific token to open DM
+      const workspaceToken = getWorkspaceToken(userInfo.user.team_id);
+      if (workspaceToken !== SLACK_BOT_TOKEN) {
+        console.log(`🔑 Using workspace-specific token for DM`);
+        const workspaceClient = new app.client.constructor({
+          token: workspaceToken,
+        });
+
+        try {
+          const { channel } = await workspaceClient.conversations.open({
+            users: userId,
+          });
+          await workspaceClient.chat.postMessage({
+            channel: channel.id,
+            text: "Hypernative setup required",
+            blocks: [
               {
-                type: "button",
-                text: { type: "plain_text", text: "Open setup" },
-                action_id: "open_setup_modal",
-                value: "open",
+                type: "header",
+                text: {
+                  type: "plain_text",
+                  text: "Set a destination thread for Hypernative alerts",
+                },
+              },
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: "Choose a *channel* and (optional) existing *thread timestamp* where alerts should be posted.",
+                },
+              },
+              {
+                type: "actions",
+                elements: [
+                  {
+                    type: "button",
+                    text: { type: "plain_text", text: "Open setup" },
+                    action_id: "open_setup_modal",
+                    value: "open",
+                  },
+                ],
               },
             ],
-          },
-        ],
-      })
-    )
-    .then(() => null)
-    .catch((e) => {
-      console.error("Failed to prompt for setup:", e);
+          });
+          return null;
+        } catch (dmError) {
+          console.log(
+            `❌ Failed to DM global user with workspace token:`,
+            dmError.message
+          );
+        }
+      }
+
+      console.log(
+        `💡 Global users should use slash commands instead: /hypernative-setup`
+      );
       return null;
+    }
+  } catch (error) {
+    console.log(
+      `⚠️ Could not verify user workspace for ${userId}:`,
+      error.message
+    );
+
+    // If user_not_found, it's likely a global user from another workspace
+    if (error.data && error.data.error === "user_not_found") {
+      console.log(`🌍 User ${userId} not found - treating as global user`);
+      console.log(
+        `💡 Global users should use slash commands instead: /hypernative-setup`
+      );
+      return null;
+    }
+
+    // For any other error, also treat as global user to avoid DM failures
+    console.log(
+      `🌍 Treating user ${userId} as global user due to access error`
+    );
+    console.log(
+      `💡 Global users should use slash commands instead: /hypernative-setup`
+    );
+    return null;
+  }
+
+  // DM the admin requesting setup
+  try {
+    const { channel } = await client.conversations.open({ users: userId });
+    await client.chat.postMessage({
+      channel: channel.id,
+      text: "Hypernative setup required",
+      blocks: [
+        {
+          type: "header",
+          text: {
+            type: "plain_text",
+            text: "Set a destination thread for Hypernative alerts",
+          },
+        },
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: "Choose a *channel* and (optional) existing *thread timestamp* where alerts should be posted.",
+          },
+        },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Open setup" },
+              action_id: "open_setup_modal",
+              value: "open",
+            },
+          ],
+        },
+      ],
     });
+    return null;
+  } catch (e) {
+    console.error("Failed to prompt for setup:", e);
+    if (e.data && e.data.error === "channel_not_found") {
+      console.log(
+        `💡 User ${userId} cannot receive DMs. Try using slash command: /hypernative-setup`
+      );
+    }
+    return null;
+  }
 }
 
 function parseHypernativePayload(body) {
@@ -567,20 +853,78 @@ app.action("open_setup_modal", async ({ ack, body, client }) => {
   });
 });
 
-app.view("setup_destination_modal", async ({ ack, body, view }) => {
+app.view("setup_destination_modal", async ({ ack, body, view, client }) => {
   await ack();
-  const userId = body.user.id;
+  const originalUserId = body.user.id;
   const channel = view.state.values.channel_b.channel.selected_conversation;
 
-  updateStore((store) => {
+  // Translate global user ID to local ID if needed
+  const userId = await translateUserId(client, originalUserId);
+
+  // Get workspace token for channel validation
+  let userWorkspaceId = null;
+  try {
+    const userInfo = await client.users.info({ user: originalUserId });
+    userWorkspaceId = userInfo.user.team_id;
+  } catch (userError) {
+    console.log(`⚠️ Could not get user workspace info:`, userError.message);
+  }
+
+  // Validate that the selected channel is accessible
+  const workspaceToken = getWorkspaceToken(userWorkspaceId);
+  const channelValidation = await validateChannelAccess(
+    client,
+    channel,
+    workspaceToken
+  );
+  if (!channelValidation.accessible) {
+    console.error(
+      `❌ Selected channel ${channel} is not accessible:`,
+      channelValidation.error
+    );
+
+    // Use workspace-specific token for error message
+    const errorWorkspaceClient = new app.client.constructor({
+      token: workspaceToken,
+    });
+    await errorWorkspaceClient.chat.postMessage({
+      channel: originalUserId,
+      text: "❌ Channel setup failed",
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `❌ *Channel Setup Failed*\n\nThe channel you selected (<#${channel}>) is not accessible. This might be because:\n• The channel is from a different workspace\n• The bot doesn't have permission to access the channel\n• The channel no longer exists\n\nPlease try selecting a different channel.`,
+          },
+        },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Try Again" },
+              action_id: "open_setup_modal",
+            },
+          ],
+        },
+      ],
+    });
+    return;
+  }
+
+  await updateStore((store) => {
     store.destinations[userId] = { channel };
   });
 
-  const webhookURL = getUserWebhookURL(userId);
+  const webhookURL = await getUserWebhookURL(userId);
 
   try {
-    await app.client.chat.postMessage({
-      token: SLACK_BOT_TOKEN,
+    // Use workspace-specific token for success message
+    const successWorkspaceClient = new app.client.constructor({
+      token: workspaceToken,
+    });
+    await successWorkspaceClient.chat.postMessage({
       channel: userId,
       text: `✅ Configuration complete!`,
       blocks: [
@@ -615,7 +959,20 @@ app.view("setup_destination_modal", async ({ ack, body, view }) => {
 // Slash command: /hypernative-setup
 app.command("/hypernative-setup", async ({ ack, body, client }) => {
   await ack();
-  await client.chat.postMessage({
+
+  // Get workspace token for slash command
+  let userWorkspaceId = null;
+  try {
+    const userInfo = await client.users.info({ user: body.user_id });
+    userWorkspaceId = userInfo.user.team_id;
+  } catch (userError) {
+    console.log(`⚠️ Could not get user workspace info:`, userError.message);
+  }
+
+  const workspaceToken = getWorkspaceToken(userWorkspaceId);
+  const workspaceClient = new app.client.constructor({ token: workspaceToken });
+
+  await workspaceClient.chat.postMessage({
     channel: body.user_id,
     text: "Click to set up destination",
     blocks: [
@@ -646,8 +1003,20 @@ app.command("/hypernative-config", async ({ ack, body, client }) => {
   const userId = body.user_id;
   const dest = STORE.destinations[userId];
 
+  // Get workspace token for slash command
+  let userWorkspaceId = null;
+  try {
+    const userInfo = await client.users.info({ user: userId });
+    userWorkspaceId = userInfo.user.team_id;
+  } catch (userError) {
+    console.log(`⚠️ Could not get user workspace info:`, userError.message);
+  }
+
+  const workspaceToken = getWorkspaceToken(userWorkspaceId);
+  const workspaceClient = new app.client.constructor({ token: workspaceToken });
+
   if (!dest || !dest.channel) {
-    await client.chat.postMessage({
+    await workspaceClient.chat.postMessage({
       channel: userId,
       text: "❌ Not configured yet",
       blocks: [
@@ -663,9 +1032,9 @@ app.command("/hypernative-config", async ({ ack, body, client }) => {
     return;
   }
 
-  const webhookURL = getUserWebhookURL(userId);
+  const webhookURL = await getUserWebhookURL(userId);
 
-  await client.chat.postMessage({
+  await workspaceClient.chat.postMessage({
     channel: userId,
     text: "Your Hypernative configuration",
     blocks: [
@@ -702,41 +1071,96 @@ app.message(
     console.log(
       `💬 Received greeting/setup message from user ${userId}: "${message.text}"`
     );
+
+    // Check if this is a global user from a different workspace
+    let isGlobalUser = false;
+    try {
+      const userInfo = await client.users.info({ user: userId });
+      const authTest = await client.auth.test();
+      isGlobalUser = userInfo.user.team_id !== authTest.team_id;
+
+      if (isGlobalUser) {
+        console.log(
+          `🌍 Global user ${userId} from different workspace detected`
+        );
+      }
+    } catch (error) {
+      console.log(
+        `⚠️ Could not verify user workspace for ${userId}:`,
+        error.message
+      );
+
+      // If user_not_found, it's likely a global user from another workspace
+      if (error.data && error.data.error === "user_not_found") {
+        console.log(`🌍 User ${userId} not found - treating as global user`);
+        isGlobalUser = true;
+      }
+    }
+
     const dest = STORE.destinations[userId];
 
     if (!dest || !dest.channel) {
-      await say({
-        text: "👋 Hi there! I can help you set up Hypernative alerts.",
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: "👋 *Hi there!* I'm your Hypernative alerts bot.\n\nI can help you set up personalized webhook alerts that go directly to your chosen channel.",
-            },
-          },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: "🚀 *Ready to get started?*\nI'll help you choose where you want your alerts to go, then give you a unique webhook URL.",
-            },
-          },
-          {
-            type: "actions",
-            elements: [
-              {
-                type: "button",
-                text: { type: "plain_text", text: "🔧 Set Up Alerts" },
-                action_id: "open_setup_modal",
-                style: "primary",
+      if (isGlobalUser) {
+        await say({
+          text: "👋 Hi there! I can help you set up Hypernative alerts.",
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "👋 *Hi there!* I'm your Hypernative alerts bot.\n\nI can help you set up personalized webhook alerts that go directly to your chosen channel.",
               },
-            ],
-          },
-        ],
-      });
+            },
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "🌍 *You're from a different workspace*\nSince you're from another workspace, please use the slash command to set up your alerts:",
+              },
+            },
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "💬 *Use this command:*\n`/hypernative-setup`\n\nThis will open the setup modal where you can choose your destination channel and get your webhook URL.",
+              },
+            },
+          ],
+        });
+      } else {
+        await say({
+          text: "👋 Hi there! I can help you set up Hypernative alerts.",
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "👋 *Hi there!* I'm your Hypernative alerts bot.\n\nI can help you set up personalized webhook alerts that go directly to your chosen channel.",
+              },
+            },
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "🚀 *Ready to get started?*\nI'll help you choose where you want your alerts to go, then give you a unique webhook URL.",
+              },
+            },
+            {
+              type: "actions",
+              elements: [
+                {
+                  type: "button",
+                  text: { type: "plain_text", text: "🔧 Set Up Alerts" },
+                  action_id: "open_setup_modal",
+                  style: "primary",
+                },
+              ],
+            },
+          ],
+        });
+      }
     } else {
-      const webhookURL = getUserWebhookURL(userId);
+      const webhookURL = await getUserWebhookURL(userId);
       await say({
         text: "👋 Hey! You're already configured.",
         blocks: [
@@ -801,7 +1225,7 @@ app.message(/(webhook|url|link)/i, async ({ message, say }) => {
       ],
     });
   } else {
-    const webhookURL = getUserWebhookURL(userId);
+    const webhookURL = await getUserWebhookURL(userId);
     await say({
       text: `Here's your webhook URL: ${webhookURL}`,
       blocks: [
@@ -853,6 +1277,13 @@ app.message(/(how|what|where|status)/i, async ({ message, say }) => {
   });
 });
 
+// Track home view failures to disable if consistently failing
+let homeViewFailures = 0;
+const MAX_HOME_VIEW_FAILURES = 5;
+
+// Track which workspaces the bot is installed in and their tokens
+let workspaceTokens = new Map(); // { teamId: { token, team, bot, user, scopes } }
+
 // --- App Home (when users visit the bot's profile/home tab) ---
 app.event("app_home_opened", async ({ event, client }) => {
   console.log(
@@ -875,9 +1306,109 @@ app.event("app_home_opened", async ({ event, client }) => {
     return;
   }
 
+  // Check if home view is disabled due to repeated failures
+  if (homeViewFailures >= MAX_HOME_VIEW_FAILURES) {
+    console.log(
+      "🚫 Home view disabled due to repeated failures. Use DM or slash commands instead."
+    );
+    return;
+  }
+
   console.log(`🏠 Processing app home for user: ${userId}`);
 
-  const dest = STORE.destinations[userId];
+  // Get bot and user workspace information for debugging
+  let botWorkspaceInfo = null;
+  let userWorkspaceInfo = null;
+  let userWorkspaceId = null;
+
+  try {
+    const authTest = await client.auth.test();
+    botWorkspaceInfo = {
+      team_id: authTest.team_id,
+      team_name: authTest.team,
+      user_id: authTest.user_id,
+      bot_id: authTest.bot_id,
+    };
+    console.log(`🤖 Bot workspace info:`, botWorkspaceInfo);
+
+    // Track this workspace as installed
+    console.log(
+      `📋 Installed workspaces with tokens:`,
+      Array.from(workspaceTokens.keys())
+    );
+  } catch (authError) {
+    console.error(`❌ Could not get bot workspace info:`, authError);
+  }
+
+  // Try to get user info with workspace-specific token first
+  let userInfo = null;
+  let workspaceClient = client; // Default to original client
+
+  // Check if we have workspace tokens and try to find the right one
+  if (workspaceTokens.size === 0) {
+    console.log(
+      `⚠️ No workspace tokens available - bot may not be installed in other workspaces`
+    );
+  }
+
+  for (const [teamId, workspaceData] of workspaceTokens.entries()) {
+    try {
+      const testClient = new app.client.constructor({
+        token: workspaceData.token,
+      });
+      const testUserInfo = await testClient.users.info({ user: userId });
+      if (testUserInfo.user) {
+        userInfo = testUserInfo;
+        userWorkspaceId = teamId;
+        workspaceClient = testClient;
+        console.log(
+          `🔑 Found user ${userId} in workspace ${teamId}, using workspace-specific client`
+        );
+        break;
+      }
+    } catch (error) {
+      // Continue trying other workspaces
+      continue;
+    }
+  }
+
+  // If not found in any workspace, try with default client
+  if (!userInfo) {
+    try {
+      userInfo = await client.users.info({ user: userId });
+      userWorkspaceId = userInfo.user.team_id;
+      console.log(`👤 User info retrieved with default client:`, userInfo.user);
+    } catch (error) {
+      console.error(`❌ Cannot access user ${userId} with any client:`, error);
+      if (error.data && error.data.error === "user_not_found") {
+        console.log(
+          `🌍 User ${userId} not found - likely from different workspace`
+        );
+        if (workspaceTokens.size === 0) {
+          console.log(
+            `💡 Bot is not installed in any other workspaces. User needs to install the bot in their workspace first.`
+          );
+          console.log(
+            `💡 Installation URL: ${
+              process.env.BASE_URL || "http://localhost:3000"
+            }/slack/install`
+          );
+        } else {
+          console.log(
+            `💡 Global users should use DM or slash commands instead of App Home`
+          );
+        }
+        return;
+      }
+      console.log("🚫 Skipping home view - user not accessible");
+      return;
+    }
+  }
+
+  // Translate global user ID to local ID if needed
+  const localUserId = await translateUserId(workspaceClient, userId);
+
+  const dest = STORE.destinations[localUserId];
 
   try {
     const homeView = {
@@ -898,7 +1429,9 @@ app.event("app_home_opened", async ({ event, client }) => {
               dest && dest.channel
                 ? `✅ *You're all set up!*\n\nYour alerts will be posted to <#${
                     dest.channel
-                  }>.\n\nYour webhook URL:\n\`${getUserWebhookURL(userId)}\``
+                  }>.\n\nYour webhook URL:\n\`${await getUserWebhookURL(
+                    userId
+                  )}\``
                 : "👋 *Welcome!* I help you receive Hypernative alerts in Slack.\n\nGet started by configuring where you want your alerts to go.",
           },
         },
@@ -938,17 +1471,107 @@ app.event("app_home_opened", async ({ event, client }) => {
       ],
     };
 
-    await client.views.publish({
-      user_id: userId,
+    // Set user workspace info for comparison
+    userWorkspaceInfo = {
+      team_id: userInfo.user.team_id,
+      user_id: userInfo.user.id,
+      name: userInfo.user.name,
+      real_name: userInfo.user.real_name,
+    };
+    console.log(`👤 User workspace info:`, userWorkspaceInfo);
+
+    // Compare workspaces
+    if (botWorkspaceInfo && userWorkspaceInfo) {
+      const sameWorkspace =
+        botWorkspaceInfo.team_id === userWorkspaceInfo.team_id;
+      console.log(`🏢 Same workspace: ${sameWorkspace}`);
+      console.log(
+        `🏢 Bot workspace: ${botWorkspaceInfo.team_name} (${botWorkspaceInfo.team_id})`
+      );
+      console.log(`🏢 User workspace: ${userWorkspaceInfo.team_id}`);
+
+      if (!sameWorkspace) {
+        console.log(
+          `🌍 User is from different workspace - using workspace-specific token`
+        );
+      }
+    }
+
+    // Try to publish the home view using the workspace client we found
+    console.log(`🔍 Attempting to publish home view for user: ${localUserId}`);
+    console.log(`🔍 Home view structure:`, JSON.stringify(homeView, null, 2));
+
+    console.log(
+      `🔑 Using workspace client for App Home: ${
+        workspaceClient !== client ? "workspace-specific" : "default"
+      }`
+    );
+
+    const result = await workspaceClient.views.publish({
+      user_id: localUserId,
       view: homeView,
     });
-    console.log(`✅ Successfully published home view for user: ${userId}`);
+    console.log(
+      `✅ Successfully published home view for user: ${localUserId} (original: ${userId}) using workspace token`,
+      result
+    );
+
+    // Reset failure counter on success
+    homeViewFailures = 0;
   } catch (error) {
     console.error(`❌ Error publishing home view for user ${userId}:`, error);
+
+    // Increment failure counter
+    homeViewFailures++;
+    console.log(
+      `❌ Home view failure count: ${homeViewFailures}/${MAX_HOME_VIEW_FAILURES}`
+    );
+
     if (error.data && error.data.error === "invalid_arguments") {
-      console.error(
-        "❌ Invalid arguments - user_id might be malformed:",
-        userId
+      console.error("❌ Invalid arguments error details:", error.data);
+      console.error("❌ Response metadata:", error.data.response_metadata);
+
+      // Try alternative approach - check if it's a scope issue
+      console.log("🔍 Checking bot permissions...");
+      try {
+        const authTest = await client.auth.test();
+        console.log("🔍 Bot auth info:", authTest);
+
+        // Check if App Home is enabled by trying to get app info
+        try {
+          const appInfo = await client.apps.info();
+          console.log("🔍 App info:", appInfo);
+        } catch (appInfoError) {
+          console.log(
+            "⚠️ Could not get app info (this might be normal):",
+            appInfoError.message
+          );
+        }
+
+        // Check bot's capabilities and features
+        try {
+          const teamInfo = await client.team.info();
+          console.log("🔍 Team info:", {
+            team_id: teamInfo.team.id,
+            team_name: teamInfo.team.name,
+            domain: teamInfo.team.domain,
+            plan: teamInfo.team.plan || "unknown",
+          });
+        } catch (teamError) {
+          console.log("⚠️ Could not get team info:", teamError.message);
+        }
+      } catch (authError) {
+        console.error("❌ Auth test failed:", authError);
+      }
+    }
+
+    // Don't crash - just log the error and continue
+    console.log("🔄 Bot continuing despite home view error...");
+
+    // If we've hit the failure limit, disable home view
+    if (homeViewFailures >= MAX_HOME_VIEW_FAILURES) {
+      console.log(
+        "🚫 Home view disabled due to repeated failures. Users should use DM or slash commands instead."
       );
     }
   }
@@ -1099,7 +1722,7 @@ receiver.router.post(
       console.error("webhook error", e);
       // Save data even if webhook fails
       try {
-        saveStore(STORE);
+        await saveStore(STORE);
       } catch (saveError) {
         console.error("Failed to save after webhook error:", saveError);
       }
@@ -1155,13 +1778,56 @@ receiver.router.post(
         `📤 Posting alert to channel ${dest.channel} for user ${userId}`
       );
 
+      // Get user's workspace to use correct token
+      let userWorkspaceId = null;
+      try {
+        const userInfo = await app.client.users.info({ user: userId });
+        userWorkspaceId = userInfo.user.team_id;
+        console.log(`🏢 User ${userId} is from workspace: ${userWorkspaceId}`);
+      } catch (userError) {
+        console.log(`⚠️ Could not get user workspace info:`, userError.message);
+      }
+
+      // Check if the channel is accessible before attempting to post
+      const workspaceToken = getWorkspaceToken(userWorkspaceId);
+      const workspaceClient = new app.client.constructor({
+        token: workspaceToken,
+      });
+
+      const channelValidation = await validateChannelAccess(
+        workspaceClient,
+        dest.channel
+      );
+      if (!channelValidation.accessible) {
+        console.error(
+          `❌ Channel ${dest.channel} not accessible:`,
+          channelValidation.error
+        );
+        console.error(
+          `💡 User ${userId} needs to reconfigure their destination channel`
+        );
+
+        // Clear the invalid destination
+        await updateStore((store) => {
+          delete store.destinations[userId];
+        });
+
+        return res.status(404).json({
+          ok: false,
+          error: "channel_not_found",
+          message:
+            "Channel not accessible - user needs to reconfigure destination",
+          user: userId,
+        });
+      }
+      console.log(`✅ Channel ${dest.channel} is accessible`);
+
       const alertData = summarizeBlocks(riskInsight);
 
-      // Try to post the message, and if channel_not_found, attempt to join first
+      // Try to post the message using workspace-specific token
       let post;
       try {
-        post = await app.client.chat.postMessage({
-          token: SLACK_BOT_TOKEN,
+        post = await workspaceClient.chat.postMessage({
           channel: dest.channel,
           text: "Hypernative transaction alert",
           attachments: [
@@ -1177,16 +1843,14 @@ receiver.router.post(
             `🔄 Channel not found, attempting to join channel ${dest.channel}`
           );
           try {
-            // Try to join the channel
-            await app.client.conversations.join({
-              token: SLACK_BOT_TOKEN,
+            // Try to join the channel using workspace token
+            await workspaceClient.conversations.join({
               channel: dest.channel,
             });
             console.log(`✅ Successfully joined channel ${dest.channel}`);
 
             // Retry posting the message
-            post = await app.client.chat.postMessage({
-              token: SLACK_BOT_TOKEN,
+            post = await workspaceClient.chat.postMessage({
               channel: dest.channel,
               text: "Hypernative transaction alert",
               attachments: [
@@ -1201,6 +1865,13 @@ receiver.router.post(
               `❌ Failed to join channel ${dest.channel}:`,
               joinError
             );
+
+            // If join fails, clear the invalid destination
+            console.log(`🧹 Clearing invalid destination for user ${userId}`);
+            await updateStore((store) => {
+              delete store.destinations[userId];
+            });
+
             throw error; // Re-throw the original error
           }
         } else {
@@ -1218,7 +1889,7 @@ receiver.router.post(
       console.error("user webhook error", e);
       // Save data even if webhook fails
       try {
-        saveStore(STORE);
+        await saveStore(STORE);
       } catch (saveError) {
         console.error("Failed to save after user webhook error:", saveError);
       }
@@ -1248,17 +1919,25 @@ receiver.router.get("/slack/install", (req, res) => {
             .install-btn:hover { background: #611f69; }
             .feature { margin: 10px 0; }
             .feature::before { content: "✅ "; }
+            .warning { background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 4px; margin: 20px 0; }
+            .warning::before { content: "⚠️ "; font-weight: bold; }
         </style>
     </head>
     <body>
         <h1>🤖 Hypernative Slack Bot</h1>
         <p>Get personalized Hypernative alerts delivered directly to your Slack channels.</p>
         
+        <div class="warning">
+            <strong>Important:</strong> For the best experience, install this bot in your own workspace. 
+            If you're from a different workspace, you'll need to install it there to access the App Home feature.
+        </div>
+        
         <h3>Features:</h3>
         <div class="feature">Personal webhook URLs for each user</div>
         <div class="feature">Configurable alert destinations</div>
         <div class="feature">Interactive setup via DM or slash commands</div>
         <div class="feature">Accept/Deny transaction buttons</div>
+        <div class="feature">App Home interface (when installed in your workspace)</div>
         
         <a href="${installUrl}" class="install-btn">Add to Slack</a>
         
@@ -1266,6 +1945,15 @@ receiver.router.get("/slack/install", (req, res) => {
         <p>1. Use <code>/hypernative-setup</code> to configure your alerts</p>
         <p>2. Or DM the bot with "hi" to get started</p>
         <p>3. Get your unique webhook URL and add it to Hypernative</p>
+        <p>4. Visit the bot's profile to access the App Home interface</p>
+        
+        <h3>Cross-Workspace Users:</h3>
+        <p>If you're from a different workspace, you can still use:</p>
+        <ul>
+            <li>Slash commands: <code>/hypernative-setup</code>, <code>/hypernative-config</code></li>
+            <li>Webhook functionality (once configured)</li>
+            <li>DM interactions (if accessible)</li>
+        </ul>
     </body>
     </html>
   `);
@@ -1318,8 +2006,23 @@ receiver.router.get("/slack/oauth_redirect", async (req, res) => {
       installedAt: new Date().toISOString(),
     };
 
+    // Store workspace-specific token
+    workspaceTokens.set(result.team.id, {
+      token: result.access_token,
+      team: result.team,
+      bot: result.bot_user_id,
+      user: result.authed_user?.id,
+      scopes: result.scope,
+      installedAt: new Date().toISOString(),
+    });
+
+    console.log(
+      `✅ Stored workspace token for team: ${result.team.id} (${result.team.name})`
+    );
+    console.log(`📋 Total workspaces with tokens: ${workspaceTokens.size}`);
+
     // Save to installations store (you might want to use a database for production)
-    updateStore((store) => {
+    await updateStore((store) => {
       if (!store.installations) store.installations = {};
       store.installations[result.team.id] = installation;
     });
@@ -1365,6 +2068,8 @@ receiver.router.get("/healthz", (req, res) => {
     userTokens: Object.keys(STORE.userTokens).length,
     tokenMappings: Object.keys(STORE.tokenToUser).length,
     installations: Object.keys(STORE.installations).length,
+    workspaceTokens: workspaceTokens.size,
+    installedWorkspaces: Array.from(workspaceTokens.keys()),
     lastSave: lastSaveTime,
     storagePath: PERSIST_PATH,
   };
@@ -1385,7 +2090,16 @@ receiver.router.get("/healthz", (req, res) => {
     `   Base URL: ${process.env.BASE_URL || "http://localhost:3000"}`
   );
   console.log(`   Admin User: ${ADMIN_USER_ID}`);
-  console.log(`   Storage Path: ${PERSIST_PATH}`);
+  console.log(
+    `   Storage: ${
+      USE_GIST_STORAGE
+        ? `GitHub Gist (${GIST_ID})`
+        : `Local file (${PERSIST_PATH})`
+    }`
+  );
+
+  // Initialize storage first
+  await initializeStorage();
 
   try {
     await app.start(PORT);
