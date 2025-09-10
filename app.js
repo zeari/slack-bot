@@ -684,7 +684,28 @@ app.message(/(how|what|where|status)/i, async ({ message, say }) => {
 
 // --- App Home (when users visit the bot's profile/home tab) ---
 app.event("app_home_opened", async ({ event, client }) => {
+  console.log(
+    "🏠 App home opened event received:",
+    JSON.stringify(event, null, 2)
+  );
   const userId = event.user;
+
+  // Validate userId before proceeding
+  if (!userId) {
+    console.error("❌ Invalid user_id in app_home_opened event:", event);
+    return;
+  }
+
+  // Validate user_id format (should start with 'U')
+  if (!userId.startsWith("U")) {
+    console.error(
+      `❌ Invalid user_id format: ${userId} (should start with 'U')`
+    );
+    return;
+  }
+
+  console.log(`🏠 Processing app home for user: ${userId}`);
+
   const dest = STORE.destinations[userId];
 
   try {
@@ -750,8 +771,15 @@ app.event("app_home_opened", async ({ event, client }) => {
       user_id: userId,
       view: homeView,
     });
+    console.log(`✅ Successfully published home view for user: ${userId}`);
   } catch (error) {
-    console.error("Error publishing home view:", error);
+    console.error(`❌ Error publishing home view for user ${userId}:`, error);
+    if (error.data && error.data.error === "invalid_arguments") {
+      console.error(
+        "❌ Invalid arguments - user_id might be malformed:",
+        userId
+      );
+    }
   }
 });
 
@@ -951,17 +979,57 @@ receiver.router.post(
       );
 
       const alertData = summarizeBlocks(riskInsight);
-      const post = await app.client.chat.postMessage({
-        token: SLACK_BOT_TOKEN,
-        channel: dest.channel,
-        text: "Hypernative transaction alert",
-        attachments: [
-          {
-            color: alertData.color,
-            blocks: alertData.blocks,
-          },
-        ],
-      });
+
+      // Try to post the message, and if channel_not_found, attempt to join first
+      let post;
+      try {
+        post = await app.client.chat.postMessage({
+          token: SLACK_BOT_TOKEN,
+          channel: dest.channel,
+          text: "Hypernative transaction alert",
+          attachments: [
+            {
+              color: alertData.color,
+              blocks: alertData.blocks,
+            },
+          ],
+        });
+      } catch (error) {
+        if (error.data && error.data.error === "channel_not_found") {
+          console.log(
+            `🔄 Channel not found, attempting to join channel ${dest.channel}`
+          );
+          try {
+            // Try to join the channel
+            await app.client.conversations.join({
+              token: SLACK_BOT_TOKEN,
+              channel: dest.channel,
+            });
+            console.log(`✅ Successfully joined channel ${dest.channel}`);
+
+            // Retry posting the message
+            post = await app.client.chat.postMessage({
+              token: SLACK_BOT_TOKEN,
+              channel: dest.channel,
+              text: "Hypernative transaction alert",
+              attachments: [
+                {
+                  color: alertData.color,
+                  blocks: alertData.blocks,
+                },
+              ],
+            });
+          } catch (joinError) {
+            console.error(
+              `❌ Failed to join channel ${dest.channel}:`,
+              joinError
+            );
+            throw error; // Re-throw the original error
+          }
+        } else {
+          throw error; // Re-throw if it's not a channel_not_found error
+        }
+      }
 
       return res.json({
         ok: true,
@@ -980,7 +1048,7 @@ receiver.router.post(
 receiver.router.get("/slack/install", (req, res) => {
   const clientId = process.env.SLACK_CLIENT_ID;
   const scopes =
-    "app_mentions:read,channels:read,chat:write,chat:write.public,commands,groups:read,im:history,im:read,im:write,mpim:write,users:read";
+    "app_mentions:read,channels:read,channels:join,chat:write,chat:write.public,commands,groups:read,im:history,im:read,im:write,mpim:write,users:read";
 
   const installUrl = `https://slack.com/oauth/v2/authorize?client_id=${clientId}&scope=${scopes}&redirect_uri=${encodeURIComponent(
     process.env.BASE_URL || "http://localhost:3000"
@@ -1179,7 +1247,8 @@ Slack App Configuration (minimal)
 1) Create an app in https://api.slack.com/apps → Basic Information.
 2) Add features & functionality:
    - OAuth & Permissions → Scopes (Bot Token):
-     channels:read, chat:write, chat:write.public, groups:read, im:history, im:write, mpim:write, commands, users:read
+     channels:read, channels:join, chat:write, chat:write.public, groups:read, im:history, im:write, mpim:write, commands, users:read
+   - App Home → *On* (required for home tab functionality)
    - Interactivity & Shortcuts → *On*, Request URL: https://<your-domain>/slack/events
    - Slash Commands (optional): /hypernative-setup → https://<your-domain>/slack/events
    - Event Subscriptions: *On*, Request URL: https://<your-domain>/slack/events (no events strictly required here).
