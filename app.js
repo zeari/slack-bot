@@ -92,9 +92,177 @@ function loadStore() {
   }
 }
 function saveStore(store) {
-  fs.writeFileSync(PERSIST_PATH, JSON.stringify(store, null, 2));
+  try {
+    // Create backup before saving
+    if (fs.existsSync(PERSIST_PATH)) {
+      const backupPath = `${PERSIST_PATH}.backup`;
+      fs.copyFileSync(PERSIST_PATH, backupPath);
+    }
+
+    // Write to temporary file first, then rename (atomic operation)
+    const tempPath = `${PERSIST_PATH}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(store, null, 2));
+    fs.renameSync(tempPath, PERSIST_PATH);
+
+    console.log(`💾 Storage saved successfully to ${PERSIST_PATH}`);
+  } catch (error) {
+    console.error(`❌ Failed to save storage:`, error);
+    // Try to restore from backup if main save failed
+    const backupPath = `${PERSIST_PATH}.backup`;
+    if (fs.existsSync(backupPath)) {
+      try {
+        fs.copyFileSync(backupPath, PERSIST_PATH);
+        console.log(`🔄 Restored from backup: ${backupPath}`);
+      } catch (restoreError) {
+        console.error(`❌ Failed to restore from backup:`, restoreError);
+      }
+    }
+    throw error;
+  }
 }
 let STORE = loadStore();
+
+// Validate and repair storage data
+function validateStorage(store) {
+  let needsRepair = false;
+
+  // Ensure all required fields exist
+  if (!store.destinations || typeof store.destinations !== "object") {
+    store.destinations = {};
+    needsRepair = true;
+  }
+
+  if (!store.userTokens || typeof store.userTokens !== "object") {
+    store.userTokens = {};
+    needsRepair = true;
+  }
+
+  if (!store.tokenToUser || typeof store.tokenToUser !== "object") {
+    store.tokenToUser = {};
+    needsRepair = true;
+  }
+
+  if (!store.installations || typeof store.installations !== "object") {
+    store.installations = {};
+    needsRepair = true;
+  }
+
+  // Validate token mappings consistency
+  const orphanedTokens = [];
+  for (const [token, userId] of Object.entries(store.tokenToUser)) {
+    if (!store.userTokens[userId] || store.userTokens[userId] !== token) {
+      orphanedTokens.push(token);
+    }
+  }
+
+  // Remove orphaned tokens
+  orphanedTokens.forEach((token) => {
+    delete store.tokenToUser[token];
+    needsRepair = true;
+  });
+
+  // Validate user tokens consistency
+  const orphanedUsers = [];
+  for (const [userId, token] of Object.entries(store.userTokens)) {
+    if (!store.tokenToUser[token] || store.tokenToUser[token] !== userId) {
+      orphanedUsers.push(userId);
+    }
+  }
+
+  // Remove orphaned users
+  orphanedUsers.forEach((userId) => {
+    delete store.userTokens[userId];
+    needsRepair = true;
+  });
+
+  if (needsRepair) {
+    console.log("🔧 Storage validation found issues, repairing...");
+    saveStore(store);
+    console.log("✅ Storage repaired successfully");
+  } else {
+    console.log("✅ Storage validation passed");
+  }
+
+  return store;
+}
+
+// Validate storage on startup
+STORE = validateStorage(STORE);
+
+// Safe storage update function that automatically saves
+function updateStore(updateFn) {
+  try {
+    updateFn(STORE);
+    saveStore(STORE);
+  } catch (error) {
+    console.error(`❌ Failed to update storage:`, error);
+    throw error;
+  }
+}
+
+// Periodic auto-save to prevent data loss
+let lastSaveTime = Date.now();
+const AUTO_SAVE_INTERVAL = 30000; // 30 seconds
+
+setInterval(() => {
+  try {
+    const now = Date.now();
+    if (now - lastSaveTime >= AUTO_SAVE_INTERVAL) {
+      saveStore(STORE);
+      lastSaveTime = now;
+      console.log(`🔄 Auto-save completed at ${new Date().toISOString()}`);
+    }
+  } catch (error) {
+    console.error(`❌ Auto-save failed:`, error);
+  }
+}, AUTO_SAVE_INTERVAL);
+
+// Graceful shutdown handler
+process.on("SIGINT", () => {
+  console.log("\n🛑 Received SIGINT, saving data before exit...");
+  try {
+    saveStore(STORE);
+    console.log("✅ Data saved successfully");
+  } catch (error) {
+    console.error("❌ Failed to save data on exit:", error);
+  }
+  process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+  console.log("\n🛑 Received SIGTERM, saving data before exit...");
+  try {
+    saveStore(STORE);
+    console.log("✅ Data saved successfully");
+  } catch (error) {
+    console.error("❌ Failed to save data on exit:", error);
+  }
+  process.exit(0);
+});
+
+// Handle uncaught exceptions - save data but don't crash
+process.on("uncaughtException", (error) => {
+  console.error("❌ Uncaught Exception:", error);
+  try {
+    saveStore(STORE);
+    console.log("✅ Data saved after error");
+  } catch (saveError) {
+    console.error("❌ Failed to save data after error:", saveError);
+  }
+  console.log("🔄 Bot continuing to run despite error...");
+});
+
+// Handle unhandled promise rejections - save data but don't crash
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
+  try {
+    saveStore(STORE);
+    console.log("✅ Data saved after rejection");
+  } catch (saveError) {
+    console.error("❌ Failed to save data after rejection:", saveError);
+  }
+  console.log("🔄 Bot continuing to run despite rejection...");
+});
 
 // ---- Bolt receiver (so we can mount custom Express routes) ----
 const receiver = new ExpressReceiver({
@@ -130,9 +298,10 @@ function getUserToken(userId) {
 
   // Generate new token for user
   const token = randomUUID();
-  STORE.userTokens[userId] = token;
-  STORE.tokenToUser[token] = userId;
-  saveStore(STORE);
+  updateStore((store) => {
+    store.userTokens[userId] = token;
+    store.tokenToUser[token] = userId;
+  });
 
   return token;
 }
@@ -402,8 +571,10 @@ app.view("setup_destination_modal", async ({ ack, body, view }) => {
   await ack();
   const userId = body.user.id;
   const channel = view.state.values.channel_b.channel.selected_conversation;
-  STORE.destinations[userId] = { channel };
-  saveStore(STORE);
+
+  updateStore((store) => {
+    store.destinations[userId] = { channel };
+  });
 
   const webhookURL = getUserWebhookURL(userId);
 
@@ -926,6 +1097,12 @@ receiver.router.post(
       return res.json({ ok: true, channel: post.channel, ts: post.ts });
     } catch (e) {
       console.error("webhook error", e);
+      // Save data even if webhook fails
+      try {
+        saveStore(STORE);
+      } catch (saveError) {
+        console.error("Failed to save after webhook error:", saveError);
+      }
       return res.status(500).json({ ok: false, error: "internal_error" });
     }
   }
@@ -1039,6 +1216,12 @@ receiver.router.post(
       });
     } catch (e) {
       console.error("user webhook error", e);
+      // Save data even if webhook fails
+      try {
+        saveStore(STORE);
+      } catch (saveError) {
+        console.error("Failed to save after user webhook error:", saveError);
+      }
       return res.status(500).json({ ok: false, error: "internal_error" });
     }
   }
@@ -1136,9 +1319,10 @@ receiver.router.get("/slack/oauth_redirect", async (req, res) => {
     };
 
     // Save to installations store (you might want to use a database for production)
-    if (!STORE.installations) STORE.installations = {};
-    STORE.installations[result.team.id] = installation;
-    saveStore(STORE);
+    updateStore((store) => {
+      if (!store.installations) store.installations = {};
+      store.installations[result.team.id] = installation;
+    });
 
     res.send(`
       <!DOCTYPE html>
@@ -1174,8 +1358,24 @@ receiver.router.get("/slack/oauth_redirect", async (req, res) => {
   }
 });
 
-// Health
-receiver.router.get("/healthz", (req, res) => res.send("ok"));
+// Health check with storage status
+receiver.router.get("/healthz", (req, res) => {
+  const storageStats = {
+    destinations: Object.keys(STORE.destinations).length,
+    userTokens: Object.keys(STORE.userTokens).length,
+    tokenMappings: Object.keys(STORE.tokenToUser).length,
+    installations: Object.keys(STORE.installations).length,
+    lastSave: lastSaveTime,
+    storagePath: PERSIST_PATH,
+  };
+
+  res.json({
+    status: "ok",
+    storage: storageStats,
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+  });
+});
 
 (async () => {
   console.log(`🚀 Starting Hypernative Slack Bot...`);
@@ -1205,7 +1405,18 @@ receiver.router.get("/healthz", (req, res) => res.send("ok"));
     );
   } catch (error) {
     console.error(`❌ Failed to start bot:`, error);
-    process.exit(1);
+    console.log(`🔄 Attempting to restart in 5 seconds...`);
+
+    // Retry starting the bot after a delay
+    setTimeout(async () => {
+      try {
+        await app.start(PORT);
+        console.log(`✅ Bot successfully restarted on port ${PORT}`);
+      } catch (retryError) {
+        console.error(`❌ Retry failed:`, retryError);
+        console.log(`🔄 Will continue trying to start...`);
+      }
+    }, 5000);
   }
 })();
 
