@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: hypernative-slack-bot
+    env: node
+    region: oregon # or your preferred region
+    plan: free # or starter for production
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production

@@ -1,0 +1,33 @@
+{
+  "name": "hypernative-slack-app",
+  "version": "1.0.0",
+  "main": "app.js",
+  "type": "module",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "dev:hot": "./start-dev.sh",
+    "dev:tunnel": "./start.sh",
+    "start:full": "./start.sh",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hypernative-Labs/hypernative-slack-app.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Hypernative-Labs/hypernative-slack-app/issues"
+  },
+  "homepage": "https://github.com/Hypernative-Labs/hypernative-slack-app#readme",
+  "description": "",
+  "dependencies": {
+    "@slack/bolt": "^3.18.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

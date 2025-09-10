@@ -1,0 +1,18 @@
+{
+  "watch": ["app.js", ".env"],
+  "ext": "js,json,env",
+  "ignore": [
+    "node_modules/",
+    "bot.log",
+    "tunnel.log",
+    "storage.json",
+    "*.md",
+    "start.sh",
+    "start-dev.sh"
+  ],
+  "delay": 1000,
+  "verbose": true,
+  "env": {
+    "NODE_ENV": "development"
+  }
+}
