@@ -1,0 +1,10 @@
+{
+  "debug.console.fontSize": 14,
+  "debug.console.lineHeight": 22,
+  "typescript.preferences.includePackageJsonAutoImports": "auto",
+  "javascript.preferences.includePackageJsonAutoImports": "auto",
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  }
+}

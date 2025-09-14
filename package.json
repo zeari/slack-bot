@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
+    "dev:console": "./start-dev-console.sh",
     "dev:hot": "./start-dev.sh",
+    "dev:ngrok": "./start-ngrok.sh",
     "dev:tunnel": "./start.sh",
     "start:full": "./start.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
