@@ -141,14 +141,6 @@ ${summary}
             action_id: "deny_txn",
             value: ri?.txnHash || ri?.id || "unknown",
           },
-          {
-            type: "button",
-            text: { type: "plain_text", text: "View on chain" },
-            url: ri?.txnHash
-              ? `https://etherscan.io/tx/${ri.txnHash}`
-              : undefined,
-            action_id: "view_txn",
-          },
         ],
       },
     ],

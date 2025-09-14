@@ -15,6 +15,42 @@ export function setupCommandHandlers(
   app.action("open_setup_modal", async ({ ack, body, client }) => {
     await ack();
     const userId = body.user.id;
+
+    // Check if user has existing configuration
+    const existingDest = store.destinations[userId];
+    const currentChannel = body.channel?.id;
+
+    // Determine which channel to preselect
+    let preselectedChannel = null;
+    if (
+      existingDest &&
+      existingDest.channel &&
+      existingDest.type === "channel"
+    ) {
+      // If user has existing channel config, preselect that
+      preselectedChannel = existingDest.channel;
+    } else if (currentChannel) {
+      // Otherwise, preselect current channel
+      preselectedChannel = currentChannel;
+    }
+
+    const channelSelectElement = {
+      type: "conversations_select",
+      action_id: "channel",
+      response_url_enabled: false,
+      filter: {
+        include: ["public", "private", "mpim", "im"],
+        exclude_bot_users: true,
+      },
+    };
+
+    // Add initial option if we have a channel to preselect
+    if (preselectedChannel) {
+      channelSelectElement.initial_conversation = preselectedChannel;
+    } else {
+      channelSelectElement.default_to_current_conversation = true;
+    }
+
     await client.views.open({
       trigger_id: body.trigger_id,
       view: {
@@ -32,32 +68,10 @@ export function setupCommandHandlers(
             },
           },
           {
-            type: "input",
-            block_id: "destination_type",
-            label: { type: "plain_text", text: "Destination Type" },
-            element: {
-              type: "radio_buttons",
-              action_id: "destination_type",
-              options: [
-                {
-                  text: {
-                    type: "plain_text",
-                    text: "📱 Direct Message (DM) with me",
-                  },
-                  value: "dm",
-                },
-                {
-                  text: { type: "plain_text", text: "📢 Channel" },
-                  value: "channel",
-                },
-              ],
-              initial_option: {
-                text: {
-                  type: "plain_text",
-                  text: "📱 Direct Message (DM) with me",
-                },
-                value: "dm",
-              },
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: "📢 *Destination:* Channel",
             },
           },
           {
@@ -65,19 +79,9 @@ export function setupCommandHandlers(
             block_id: "channel_b",
             label: {
               type: "plain_text",
-              text: "Channel for alerts (if not using DM)",
+              text: "Channel for alerts",
             },
-            element: {
-              type: "conversations_select",
-              action_id: "channel",
-              default_to_current_conversation: true,
-              response_url_enabled: false,
-              filter: {
-                include: ["public", "private", "mpim", "im"],
-                exclude_bot_users: true,
-              },
-            },
-            optional: true,
+            element: channelSelectElement,
           },
         ],
       },
@@ -87,112 +91,94 @@ export function setupCommandHandlers(
   app.view("setup_destination_modal", async ({ ack, body, view, client }) => {
     await ack();
     const originalUserId = body.user.id;
-    const destinationType =
-      view.state.values.destination_type?.destination_type?.selected_option
-        ?.value;
     const channel = view.state.values.channel_b?.channel?.selected_conversation;
 
     // Translate global user ID to local ID if needed
     const userId = await translateUserId(client, originalUserId);
 
-    let destinationChannel = null;
-    let destinationTypeText = "";
-
-    if (destinationType === "dm") {
-      // Use DM with the bot
-      destinationChannel = originalUserId; // DM channel is the user's ID
-      destinationTypeText = "Direct Message with the bot";
-    } else {
-      // Validate that the selected channel is accessible
-      if (!channel) {
-        await client.chat.postMessage({
-          channel: originalUserId,
-          text: "❌ Setup failed",
-          blocks: [
-            {
-              type: "section",
-              text: {
-                type: "mrkdwn",
-                text: `❌ *Setup Failed*\n\nPlease select a channel for your alerts.`,
+    // Validate that the selected channel is accessible
+    if (!channel) {
+      await client.chat.postMessage({
+        channel: originalUserId,
+        text: "❌ Setup failed",
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `❌ *Setup Failed*\n\nPlease select a channel for your alerts.`,
+            },
+          },
+          {
+            type: "actions",
+            elements: [
+              {
+                type: "button",
+                text: { type: "plain_text", text: "Try Again" },
+                action_id: "open_setup_modal",
               },
-            },
-            {
-              type: "actions",
-              elements: [
-                {
-                  type: "button",
-                  text: { type: "plain_text", text: "Try Again" },
-                  action_id: "open_setup_modal",
-                },
-              ],
-            },
-          ],
-        });
-        return;
-      }
+            ],
+          },
+        ],
+      });
+      return;
+    }
 
-      // The client provided by Bolt already has the correct workspace token
-      const channelValidation = await validateChannelAccess(
-        client,
-        channel,
-        null // No need to pass token - client already has the correct one
+    // The client provided by Bolt already has the correct workspace token
+    const channelValidation = await validateChannelAccess(
+      client,
+      channel,
+      null // No need to pass token - client already has the correct one
+    );
+
+    if (!channelValidation.accessible) {
+      console.error(
+        `❌ Selected channel ${channel} is not accessible:`,
+        channelValidation.error
       );
 
-      if (!channelValidation.accessible) {
-        console.error(
-          `❌ Selected channel ${channel} is not accessible:`,
-          channelValidation.error
-        );
+      let errorMessage = `❌ *Channel Setup Failed*\n\nThe channel you selected (<#${channel}>) is not accessible.`;
+      let actionText = "Try Again";
 
-        let errorMessage = `❌ *Channel Setup Failed*\n\nThe channel you selected (<#${channel}>) is not accessible.`;
-        let actionText = "Try Again";
-
-        if (
-          channelValidation.error === "not_in_channel" ||
-          channelValidation.isPrivate
-        ) {
-          errorMessage += `\n\n🔒 *This is a private channel and I'm not a member.*\n\nTo fix this:\n1. Go to the channel: <#${channel}>\n2. Type: \`/invite @hypernative\`\n3. Come back and try the setup again\n\nOr choose "Direct Message" instead for private alerts.`;
-          actionText = "Try Again";
-        } else {
-          errorMessage += `\n\nThis might be because:\n• The channel is from a different workspace\n• The bot doesn't have permission to access the channel\n• The channel no longer exists\n\nPlease try selecting a different channel or use Direct Message instead.`;
-        }
-
-        // Use the client provided by Bolt (already has correct token)
-        await client.chat.postMessage({
-          channel: originalUserId,
-          text: "❌ Channel setup failed",
-          blocks: [
-            {
-              type: "section",
-              text: {
-                type: "mrkdwn",
-                text: errorMessage,
-              },
-            },
-            {
-              type: "actions",
-              elements: [
-                {
-                  type: "button",
-                  text: { type: "plain_text", text: actionText },
-                  action_id: "open_setup_modal",
-                },
-                {
-                  type: "button",
-                  text: { type: "plain_text", text: "Use DM Instead" },
-                  action_id: "setup_dm_destination",
-                  style: "primary",
-                },
-              ],
-            },
-          ],
-        });
-        return;
+      if (
+        channelValidation.error === "not_in_channel" ||
+        channelValidation.isPrivate
+      ) {
+        errorMessage += `\n\n🔒 *This is a private channel and I'm not a member.*\n\nTo fix this:\n1. Go to the channel: <#${channel}>\n2. Type: \`/invite @hypernative\`\n3. Come back and try the setup again`;
+        actionText = "Try Again";
+      } else {
+        errorMessage += `\n\nThis might be because:\n• The channel is from a different workspace\n• The bot doesn't have permission to access the channel\n• The channel no longer exists\n\nPlease try selecting a different channel.`;
       }
 
-      destinationChannel = channel;
-      destinationTypeText = `<#${channel}>`;
+      // Use the client provided by Bolt (already has correct token)
+      await client.chat.postMessage({
+        channel: originalUserId,
+        text: "❌ Channel setup failed",
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: errorMessage,
+            },
+          },
+          {
+            type: "actions",
+            elements: [
+              {
+                type: "button",
+                text: { type: "plain_text", text: actionText },
+                action_id: "open_setup_modal",
+              },
+            ],
+          },
+        ],
+      });
+      return;
     }
+
+    const destinationChannel = channel;
+    const destinationTypeText = `<#${channel}>`;
 
     // Get the workspace ID from the client context
     const workspaceId = client.team?.id || client.context?.teamId;
@@ -202,7 +188,7 @@ export function setupCommandHandlers(
       (store) => {
         store.destinations[userId] = {
           channel: destinationChannel,
-          type: destinationType === "dm" ? "dm" : "channel",
+          type: "channel",
           workspaceId: workspaceId,
         };
       },
@@ -250,69 +236,36 @@ export function setupCommandHandlers(
     }
   });
 
-  // Action: setup DM destination directly
-  app.action("setup_dm_destination", async ({ ack, body, client }) => {
-    await ack();
-    const originalUserId = body.user.id;
-
-    // Translate global user ID to local ID if needed
-    const userId = await translateUserId(client, originalUserId);
-
-    // Get the workspace ID from the client context
-    const workspaceId = client.team?.id || client.context?.teamId;
-
-    await updateStoreWithChangeDetection(
-      store,
-      (store) => {
-        store.destinations[userId] = {
-          channel: originalUserId, // DM channel is the user's ID
-          type: "dm",
-          workspaceId: workspaceId,
-        };
-      },
-      "setup DM destination configuration"
-    );
-
-    const webhookURL = await getUserWebhookURL(
-      userId,
-      null,
-      store,
-      updateStoreWithChangeDetection
-    );
-
-    try {
-      // Use the client provided by Bolt (already has correct token)
-      await client.chat.postMessage({
-        channel: originalUserId,
-        text: `✅ Configuration complete!`,
-        blocks: [
-          {
-            type: "header",
-            text: {
-              type: "plain_text",
-              text: "🎉 Your Hypernative bot is configured!",
-            },
-          },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `*Destination:* Direct Message with the bot\n*Your unique webhook URL:*\n\`${webhookURL}\``,
-            },
-          },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: "📝 *Instructions:*\n• Use this URL in your Hypernative configuration\n• Only you can use this URL - it routes alerts to your DM\n• Use `/hypernative-config` to view your settings anytime",
-            },
-          },
-        ],
-      });
-    } catch (e) {
-      console.error("Post DM setup ack failed:", e);
-    }
-  });
+  // Action: setup DM destination directly - DISABLED
+  // app.action("setup_dm_destination", async ({ ack, body, client }) => {
+  //   // DM functionality has been removed - users must use channels only
+  //   await ack();
+  //   const originalUserId = body.user.id;
+  //
+  //   await client.chat.postMessage({
+  //     channel: originalUserId,
+  //     text: "❌ DM setup is no longer available",
+  //     blocks: [
+  //       {
+  //         type: "section",
+  //         text: {
+  //           type: "mrkdwn",
+  //           text: "❌ *DM setup is no longer available*\n\nPlease use the channel setup instead.",
+  //         },
+  //       },
+  //       {
+  //         type: "actions",
+  //         elements: [
+  //           {
+  //             type: "button",
+  //             text: { type: "plain_text", text: "Set Up Channel" },
+  //             action_id: "open_setup_modal",
+  //           },
+  //         ],
+  //       },
+  //     ],
+  //   });
+  // });
 
   // Slash command: /hypernative-setup
   app.command("/hypernative-setup", async ({ ack, body, client }) => {
