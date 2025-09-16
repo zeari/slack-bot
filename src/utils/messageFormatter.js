@@ -70,6 +70,34 @@ export function summarizeBlocks(ri) {
     return recommendation === "Accept it" ? "#36a64f" : "#ff0000"; // Green for accept, red for deny
   };
 
+  // Determine button text and order based on recommendation and severity
+  const getButtonConfig = (normalizedRecommendation, severity) => {
+    const lowerSeverity = severity?.toLowerCase() || "";
+
+    // Check if it's a neutral recommendation (Warn or Notes)
+    if (lowerSeverity === "warn" || lowerSeverity === "notes") {
+      return {
+        primaryButton: { text: "Accept", style: "primary" },
+        secondaryButton: { text: "Deny", style: "primary" },
+      };
+    }
+
+    // For strong recommendations
+    if (normalizedRecommendation === "Accept it") {
+      return {
+        primaryButton: { text: "Accept (Recommended)", style: "primary" },
+        secondaryButton: { text: "Deny", style: "primary" },
+      };
+    } else {
+      return {
+        primaryButton: { text: "Deny (Recommended)", style: "primary" },
+        secondaryButton: { text: "Accept Anyway", style: "primary" },
+      };
+    }
+  };
+
+  const buttonConfig = getButtonConfig(normalizedRecommendation, severity);
+
   // Format findings from context or use default
   let findings = "No critical findings";
   const findingsContext = (ri?.context || []).find(
@@ -129,16 +157,23 @@ ${summary}
         elements: [
           {
             type: "button",
-            style: "primary",
-            text: { type: "plain_text", text: "Accept" },
-            action_id: "accept_txn",
+            style: buttonConfig.primaryButton.style,
+            text: { type: "plain_text", text: buttonConfig.primaryButton.text },
+            action_id: buttonConfig.primaryButton.text.includes("Accept")
+              ? "accept_txn"
+              : "deny_txn",
             value: ri?.txnHash || ri?.id || "unknown",
           },
           {
             type: "button",
-            style: "danger",
-            text: { type: "plain_text", text: "Deny" },
-            action_id: "deny_txn",
+            style: buttonConfig.secondaryButton.style,
+            text: {
+              type: "plain_text",
+              text: buttonConfig.secondaryButton.text,
+            },
+            action_id: buttonConfig.secondaryButton.text.includes("Accept")
+              ? "accept_txn"
+              : "deny_txn",
             value: ri?.txnHash || ri?.id || "unknown",
           },
         ],

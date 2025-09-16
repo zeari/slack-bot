@@ -6,7 +6,13 @@ import { summarizeBlocks } from "../utils/messageFormatter.js";
 import {
   parseHypernativePayload,
   validateChannelAccess,
+  validateSlackToken,
+  isTokenExpiredError,
+  createTokenExpiredResponse,
+  cleanupExpiredInstallation,
+  getValidToken,
 } from "../utils/helpers.js";
+import { SLACK_CLIENT_ID, SLACK_CLIENT_SECRET } from "../config/index.js";
 
 // External webhook to receive Hypernative POSTs
 export function setupWebhookRoutes(
@@ -73,6 +79,26 @@ export function setupWebhookRoutes(
         const extractToken = (installation) =>
           installation?.bot?.token || installation?.token || null; // support both shapes
 
+        // Helper to get a valid token (with refresh if needed)
+        const getValidTokenForInstallation = async (installation) => {
+          if (!installation) return null;
+          try {
+            return await getValidToken(
+              installation,
+              SLACK_CLIENT_ID,
+              SLACK_CLIENT_SECRET,
+              updateStoreWithChangeDetection,
+              store
+            );
+          } catch (error) {
+            console.log(
+              `⚠️ Token refresh failed for installation:`,
+              error.message
+            );
+            return installation?.bot?.token || installation?.token || null;
+          }
+        };
+
         // 1) If we *know* the team (workspace) on the destination, prefer that installation
         if (userWorkspaceId) {
           try {
@@ -84,7 +110,7 @@ export function setupWebhookRoutes(
             } else if (store?.installations?.[userWorkspaceId]) {
               installation = store.installations[userWorkspaceId];
             }
-            const token = extractToken(installation);
+            const token = await getValidTokenForInstallation(installation);
             if (token) {
               workspaceClient = new WebClient(token);
               console.log(
@@ -110,7 +136,7 @@ export function setupWebhookRoutes(
         if (!userWorkspaceId || workspaceClient === app.client) {
           const installations = store?.installations || {};
           for (const [teamId, inst] of Object.entries(installations)) {
-            const token = extractToken(inst);
+            const token = await getValidTokenForInstallation(inst);
             if (!token) continue;
             const probeClient = new WebClient(token);
             try {
@@ -127,9 +153,31 @@ export function setupWebhookRoutes(
           }
         }
 
-        // 3) Optional sanity check: make sure the token we ended up with belongs to the team we think it does
-        try {
-          const auth = await workspaceClient.auth.test();
+        // 3) Validate token before attempting to post
+        const tokenValidation = await validateSlackToken(workspaceClient);
+        if (!tokenValidation.valid) {
+          if (isTokenExpiredError(tokenValidation.error)) {
+            console.log(
+              `⚠️ Token expired during validation for user ${userId} in workspace ${userWorkspaceId}`
+            );
+            // Clean up the expired installation
+            if (userWorkspaceId) {
+              await cleanupExpiredInstallation(
+                store,
+                updateStoreWithChangeDetection,
+                userWorkspaceId
+              );
+            }
+            return res
+              .status(401)
+              .json(createTokenExpiredResponse(userId, userWorkspaceId));
+          }
+          console.log(
+            "auth.test failed for selected workspace client:",
+            tokenValidation.error?.data || tokenValidation.error?.message
+          );
+        } else {
+          const auth = tokenValidation.auth;
           console.log(
             "🔎 posting with token team:",
             auth.team_id,
@@ -143,11 +191,6 @@ export function setupWebhookRoutes(
               `❌ token/team mismatch (${auth.team_id} != ${userWorkspaceId})`
             );
           }
-        } catch (e) {
-          console.log(
-            "auth.test failed for selected workspace client:",
-            e?.data || e?.message
-          );
         }
 
         console.log(`🔍 Risk insight data:`, riskInsight);
@@ -171,6 +214,23 @@ export function setupWebhookRoutes(
             ],
           });
         } catch (error) {
+          // Handle token expiration specifically
+          if (isTokenExpiredError(error)) {
+            console.log(
+              `⚠️ Token expired for user ${userId} in workspace ${userWorkspaceId}`
+            );
+            // Clean up the expired installation
+            if (userWorkspaceId) {
+              await cleanupExpiredInstallation(
+                store,
+                updateStoreWithChangeDetection,
+                userWorkspaceId
+              );
+            }
+            return res
+              .status(401)
+              .json(createTokenExpiredResponse(userId, userWorkspaceId));
+          }
           if (error.data && error.data.error === "channel_not_found") {
             console.log(
               `🔄 Channel not found, attempting to join channel ${dest.channel}`
@@ -218,6 +278,23 @@ export function setupWebhookRoutes(
                 `❌ Failed to join channel ${dest.channel}:`,
                 joinError
               );
+              // Check if the join error is also due to token expiration
+              if (isTokenExpiredError(joinError)) {
+                console.log(
+                  `⚠️ Token expired during channel join for user ${userId} in workspace ${userWorkspaceId}`
+                );
+                // Clean up the expired installation
+                if (userWorkspaceId) {
+                  await cleanupExpiredInstallation(
+                    store,
+                    updateStoreWithChangeDetection,
+                    userWorkspaceId
+                  );
+                }
+                return res
+                  .status(401)
+                  .json(createTokenExpiredResponse(userId, userWorkspaceId));
+              }
               throw error; // Re-throw the original error
             }
           } else {

@@ -125,13 +125,30 @@ export function setupInstallRoutes(
           userId: oauthData.bot_user_id,
           token: oauthData.access_token,
           scopes: oauthData.scope,
+          // Store refresh token if available (for token rotation)
+          refreshToken: oauthData.refresh_token,
+          expiresAt: oauthData.expires_in
+            ? new Date(Date.now() + oauthData.expires_in * 1000).toISOString()
+            : null,
         },
         user: {
           id: oauthData.authed_user?.id,
           token: oauthData.authed_user?.access_token,
+          // Store user refresh token if available
+          refreshToken: oauthData.authed_user?.refresh_token,
+          expiresAt: oauthData.authed_user?.expires_in
+            ? new Date(
+                Date.now() + oauthData.authed_user.expires_in * 1000
+              ).toISOString()
+            : null,
         },
         isEnterpriseInstall: !!oauthData.enterprise,
         installedAt: new Date().toISOString(),
+        // Store the refresh token at the installation level too
+        refreshToken: oauthData.refresh_token,
+        expiresAt: oauthData.expires_in
+          ? new Date(Date.now() + oauthData.expires_in * 1000).toISOString()
+          : null,
       };
 
       // Save installation data using the installation store
