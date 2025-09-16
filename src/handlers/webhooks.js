@@ -203,6 +203,12 @@ export function setupWebhookRoutes(
           console.log(
             `📤 Attempting to post message to channel ${dest.channel}`
           );
+          // Debug the alert data before posting
+          console.log(
+            `🔍 Alert data being posted:`,
+            JSON.stringify(alertData, null, 2)
+          );
+
           post = await workspaceClient.chat.postMessage({
             channel: dest.channel,
             text: "Hypernative transaction alert",

@@ -78,7 +78,7 @@ export function summarizeBlocks(ri) {
     if (lowerSeverity === "warn" || lowerSeverity === "notes") {
       return {
         primaryButton: { text: "Accept", style: "primary" },
-        secondaryButton: { text: "Deny", style: "primary" },
+        secondaryButton: { text: "Deny", style: "danger" },
       };
     }
 
@@ -86,17 +86,23 @@ export function summarizeBlocks(ri) {
     if (normalizedRecommendation === "Accept it") {
       return {
         primaryButton: { text: "Accept (Recommended)", style: "primary" },
-        secondaryButton: { text: "Deny", style: "primary" },
+        secondaryButton: { text: "Deny", style: "danger" },
       };
     } else {
       return {
-        primaryButton: { text: "Deny (Recommended)", style: "primary" },
+        primaryButton: { text: "Deny (Recommended)", style: "danger" },
         secondaryButton: { text: "Accept Anyway", style: "primary" },
       };
     }
   };
 
   const buttonConfig = getButtonConfig(normalizedRecommendation, severity);
+
+  // Debug logging for button configuration
+  console.log(
+    `🔍 Button config for recommendation "${normalizedRecommendation}" and severity "${severity}":`,
+    buttonConfig
+  );
 
   // Format findings from context or use default
   let findings = "No critical findings";
@@ -126,7 +132,7 @@ export function summarizeBlocks(ri) {
     }
   }
 
-  return {
+  const result = {
     blocks: [
       {
         type: "section",
@@ -158,7 +164,11 @@ ${summary}
           {
             type: "button",
             style: buttonConfig.primaryButton.style,
-            text: { type: "plain_text", text: buttonConfig.primaryButton.text },
+            text: {
+              type: "plain_text",
+              text: buttonConfig.primaryButton.text,
+              emoji: true,
+            },
             action_id: buttonConfig.primaryButton.text.includes("Accept")
               ? "accept_txn"
               : "deny_txn",
@@ -170,6 +180,7 @@ ${summary}
             text: {
               type: "plain_text",
               text: buttonConfig.secondaryButton.text,
+              emoji: true,
             },
             action_id: buttonConfig.secondaryButton.text.includes("Accept")
               ? "accept_txn"
@@ -182,4 +193,9 @@ ${summary}
     // Add colored stripe based on recommendation
     color: getColorByRecommendation(normalizedRecommendation),
   };
+
+  // Debug logging for the final result
+  console.log(`🔍 Generated message blocks:`, JSON.stringify(result, null, 2));
+
+  return result;
 }
