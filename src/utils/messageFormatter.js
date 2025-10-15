@@ -187,6 +187,49 @@ ${summary}
               : "deny_txn",
             value: ri?.txnHash || ri?.id || "unknown",
           },
+          {
+            type: "static_select",
+            placeholder: {
+              type: "plain_text",
+              text: "More Info",
+              emoji: true,
+            },
+            action_id: "more_info_dropdown",
+            options: [
+              {
+                text: {
+                  type: "plain_text",
+                  text: "Findings",
+                  emoji: true,
+                },
+                value: "findings",
+              },
+              {
+                text: {
+                  type: "plain_text",
+                  text: "Interpretation Summary",
+                  emoji: true,
+                },
+                value: "interpretation_summary",
+              },
+              {
+                text: {
+                  type: "plain_text",
+                  text: "Balance Changes",
+                  emoji: true,
+                },
+                value: "balance_changes",
+              },
+              {
+                text: {
+                  type: "plain_text",
+                  text: "Involved addresses",
+                  emoji: true,
+                },
+                value: "involved_addresses",
+              },
+            ],
+          },
         ],
       },
     ],

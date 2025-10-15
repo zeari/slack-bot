@@ -465,4 +465,205 @@ export function setupCommandHandlers(
       });
     }
   });
+
+  // --- More Info dropdown handlers ---
+  app.action("more_info_dropdown", async ({ ack, body, client, action }) => {
+    await ack();
+    const selectedValue = action.selected_option.value;
+    const channel = body.channel?.id;
+    const ts = body.message?.ts;
+
+    try {
+      switch (selectedValue) {
+        case "findings":
+          await client.chat.postMessage({
+            channel,
+            thread_ts: ts,
+            text: "Findings details",
+            blocks: [
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: ":warning: *Warn*",
+                },
+              },
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: "An attacker *0x12354* already has permission to withdraw your *DogUSD* tokens, and most likely will take these tokens immediately after.",
+                },
+              },
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: "*You will send:* :money_with_wings: *1000 USDC*\u2003\u2003*You will receive:* :inbox_tray: *1000 USDC*\u2003\u2003*Scammer's address:* *0x12354*",
+                },
+              },
+              {
+                type: "actions",
+                elements: [
+                  {
+                    type: "button",
+                    text: {
+                      type: "plain_text",
+                      text: "More Info",
+                      emoji: true,
+                    },
+                    action_id: "more_info",
+                    value: "more_info_clicked",
+                  },
+                ],
+              },
+            ],
+          });
+          break;
+
+        case "interpretation_summary":
+          // Get interpretation summary from the original message
+          const originalMessage = body.message;
+          let interpretationSummary = "No interpretation summary available";
+
+          if (
+            originalMessage.attachments &&
+            originalMessage.attachments[0]?.blocks
+          ) {
+            const textBlock = originalMessage.attachments[0].blocks.find(
+              (block) =>
+                block.type === "section" &&
+                block.text?.text?.includes("*Summary:*")
+            );
+            if (textBlock) {
+              const summaryMatch = textBlock.text.text.match(
+                /\*Summary:\*\s*\n(.*?)(?=\n\*|$)/s
+              );
+              if (summaryMatch) {
+                interpretationSummary = summaryMatch[1].trim();
+              }
+            }
+          }
+
+          await client.chat.postMessage({
+            channel,
+            thread_ts: ts,
+            text: "Interpretation Summary",
+            blocks: [
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `*Interpretation Summary:*\n\n${interpretationSummary}`,
+                },
+              },
+            ],
+          });
+          break;
+
+        case "balance_changes":
+          // Get balance changes from the original message
+          let balanceChanges = "No balance changes available";
+
+          if (
+            originalMessage.attachments &&
+            originalMessage.attachments[0]?.blocks
+          ) {
+            const textBlock = originalMessage.attachments[0].blocks.find(
+              (block) =>
+                block.type === "section" &&
+                block.text?.text?.includes("*Balance Changes:*")
+            );
+            if (textBlock) {
+              const balanceMatch = textBlock.text.text.match(
+                /\*Balance Changes:\*\s*(.*?)(?=\n\*|$)/s
+              );
+              if (balanceMatch) {
+                balanceChanges = balanceMatch[1].trim();
+              }
+            }
+          }
+
+          await client.chat.postMessage({
+            channel,
+            thread_ts: ts,
+            text: "Balance Changes",
+            blocks: [
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `*Balance Changes:*\n\n${balanceChanges}`,
+                },
+              },
+            ],
+          });
+          break;
+
+        case "involved_addresses":
+          // Get involved addresses from the original message
+          let involvedAddresses = "No involved addresses available";
+
+          if (
+            originalMessage.attachments &&
+            originalMessage.attachments[0]?.blocks
+          ) {
+            const textBlock = originalMessage.attachments[0].blocks.find(
+              (block) =>
+                block.type === "section" &&
+                block.text?.text?.includes("*Source:*")
+            );
+            if (textBlock) {
+              const sourceMatch = textBlock.text.text.match(
+                /\*Source:\*\s*(.*?)(?=\n\*|$)/s
+              );
+              const destMatch = textBlock.text.text.match(
+                /\*Destination:\*\s*(.*?)(?=\n\*|$)/s
+              );
+
+              let addresses = [];
+              if (sourceMatch)
+                addresses.push(`*Source:* ${sourceMatch[1].trim()}`);
+              if (destMatch)
+                addresses.push(`*Destination:* ${destMatch[1].trim()}`);
+
+              if (addresses.length > 0) {
+                involvedAddresses = addresses.join("\n");
+              }
+            }
+          }
+
+          await client.chat.postMessage({
+            channel,
+            thread_ts: ts,
+            text: "Involved Addresses",
+            blocks: [
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `*Involved Addresses:*\n\n${involvedAddresses}`,
+                },
+              },
+            ],
+          });
+          break;
+
+        default:
+          console.log(`Unknown more info option: ${selectedValue}`);
+      }
+
+      console.log(
+        `📋 More info posted for ${selectedValue} by user ${body.user.id}`
+      );
+    } catch (error) {
+      console.error("Error posting more info:", error);
+      // Fallback to posting a simple reply if the detailed post fails
+      await client.chat.postMessage({
+        channel,
+        thread_ts: ts,
+        text: `📋 More info for ${selectedValue} requested by <@${body.user.id}>`,
+      });
+    }
+  });
 }
