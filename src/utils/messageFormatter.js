@@ -228,6 +228,14 @@ ${summary}
                 },
                 value: "involved_addresses",
               },
+              {
+                text: {
+                  type: "plain_text",
+                  text: "Tag Teammate",
+                  emoji: true,
+                },
+                value: "tag_teammate",
+              },
             ],
           },
         ],

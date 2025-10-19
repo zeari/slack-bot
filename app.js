@@ -6,6 +6,8 @@ import {
   PORT,
   SLACK_SIGNING_SECRET,
   SLACK_BOT_TOKEN,
+  SLACK_CLIENT_ID,
+  SLACK_CLIENT_SECRET,
   AUTO_SAVE_INTERVAL,
 } from "./src/config/index.js";
 import {
@@ -19,6 +21,7 @@ import { setupWebhookRoutes } from "./src/handlers/webhooks.js";
 import { setupMessageHandlers } from "./src/handlers/messages.js";
 import { setupAppHomeHandler } from "./src/handlers/appHome.js";
 import { setupCommandHandlers } from "./src/handlers/commands.js";
+import { getValidToken } from "./src/utils/helpers.js";
 
 // Track which workspaces the bot is installed in and their tokens
 let workspaceTokens = new Map(); // { teamId: { token, team, bot, user, scopes } }
@@ -272,9 +275,30 @@ receiver.router.get("/healthz", (req, res) => {
         return false;
       }
 
-      console.log(`✅ Authorization successful for team: ${teamId}`);
+      // Get a valid token, refreshing if necessary
+      let botToken = installation.bot?.token;
+      try {
+        botToken = await getValidToken(
+          installation,
+          SLACK_CLIENT_ID,
+          SLACK_CLIENT_SECRET,
+          updateStoreWithChangeDetection,
+          STORE
+        );
+        console.log(
+          `✅ Authorization successful for team: ${teamId} (token validated/refreshed)`
+        );
+      } catch (error) {
+        console.log(
+          `⚠️ Token refresh failed for team: ${teamId}, using existing token:`,
+          error.message
+        );
+        // Fall back to existing token - it might still work
+        botToken = installation.bot?.token;
+      }
+
       return {
-        botToken: installation.bot?.token,
+        botToken: botToken,
         userToken: installation.user?.token,
         botId: installation.bot?.id,
         botUserId: installation.bot?.userId,

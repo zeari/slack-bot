@@ -522,29 +522,6 @@ export function setupCommandHandlers(
           break;
 
         case "interpretation_summary":
-          // Get interpretation summary from the original message
-          const originalMessage = body.message;
-          let interpretationSummary = "No interpretation summary available";
-
-          if (
-            originalMessage.attachments &&
-            originalMessage.attachments[0]?.blocks
-          ) {
-            const textBlock = originalMessage.attachments[0].blocks.find(
-              (block) =>
-                block.type === "section" &&
-                block.text?.text?.includes("*Summary:*")
-            );
-            if (textBlock) {
-              const summaryMatch = textBlock.text.text.match(
-                /\*Summary:\*\s*\n(.*?)(?=\n\*|$)/s
-              );
-              if (summaryMatch) {
-                interpretationSummary = summaryMatch[1].trim();
-              }
-            }
-          }
-
           await client.chat.postMessage({
             channel,
             thread_ts: ts,
@@ -552,38 +529,72 @@ export function setupCommandHandlers(
             blocks: [
               {
                 type: "section",
+                block_id: "title",
                 text: {
                   type: "mrkdwn",
-                  text: `*Interpretation Summary:*\n\n${interpretationSummary}`,
+                  text: "*Interpretation Summary*",
                 },
+              },
+              {
+                type: "section",
+                block_id: "line_swap",
+                text: {
+                  type: "mrkdwn",
+                  text: "Swap 💲 *USDC* with 🟢 *USDT*",
+                },
+              },
+              {
+                type: "section",
+                block_id: "line_approval",
+                text: {
+                  type: "mrkdwn",
+                  text: "Create *Approval* for `0x1234...4567` *(Phishing-Contract)* for *$1M*",
+                },
+              },
+              {
+                type: "divider",
+              },
+              {
+                type: "actions",
+                block_id: "tx_actions",
+                elements: [
+                  {
+                    type: "button",
+                    action_id: "tx_accept",
+                    text: {
+                      type: "plain_text",
+                      text: "✅ Accept Transaction",
+                      emoji: true,
+                    },
+                    value: "accept_tx_0x1234",
+                  },
+                  {
+                    type: "button",
+                    action_id: "tx_deny",
+                    text: {
+                      type: "plain_text",
+                      text: "❌ Deny Transaction",
+                      emoji: true,
+                    },
+                    value: "deny_tx_0x1234",
+                  },
+                  {
+                    type: "button",
+                    action_id: "tx_more_info",
+                    text: {
+                      type: "plain_text",
+                      text: "👁️ More Info",
+                      emoji: true,
+                    },
+                    value: "more_info_0x1234",
+                  },
+                ],
               },
             ],
           });
           break;
 
         case "balance_changes":
-          // Get balance changes from the original message
-          let balanceChanges = "No balance changes available";
-
-          if (
-            originalMessage.attachments &&
-            originalMessage.attachments[0]?.blocks
-          ) {
-            const textBlock = originalMessage.attachments[0].blocks.find(
-              (block) =>
-                block.type === "section" &&
-                block.text?.text?.includes("*Balance Changes:*")
-            );
-            if (textBlock) {
-              const balanceMatch = textBlock.text.text.match(
-                /\*Balance Changes:\*\s*(.*?)(?=\n\*|$)/s
-              );
-              if (balanceMatch) {
-                balanceChanges = balanceMatch[1].trim();
-              }
-            }
-          }
-
           await client.chat.postMessage({
             channel,
             thread_ts: ts,
@@ -591,10 +602,90 @@ export function setupCommandHandlers(
             blocks: [
               {
                 type: "section",
-                text: {
-                  type: "mrkdwn",
-                  text: `*Balance Changes:*\n\n${balanceChanges}`,
-                },
+                block_id: "header",
+                fields: [
+                  {
+                    type: "mrkdwn",
+                    text: "*Address*",
+                  },
+                  {
+                    type: "mrkdwn",
+                    text: "*Transfer*",
+                  },
+                ],
+              },
+              {
+                type: "divider",
+              },
+              {
+                type: "section",
+                block_id: "row_1",
+                fields: [
+                  {
+                    type: "mrkdwn",
+                    text: "➡️ 📄 `0xd01a...e0ba`  _ORIGIN_",
+                  },
+                  {
+                    type: "mrkdwn",
+                    text: "🔴 `-0.0156`  *AAVEETH*  `($27.7)`",
+                  },
+                ],
+              },
+              {
+                type: "section",
+                block_id: "row_2",
+                fields: [
+                  {
+                    type: "mrkdwn",
+                    text: "➡️ 📄 `0xd01a...e0ba`",
+                  },
+                  {
+                    type: "mrkdwn",
+                    text: "🟢 `+0.0156`  *AAVEETH*  `($27.7)`",
+                  },
+                ],
+              },
+              {
+                type: "section",
+                block_id: "row_3",
+                fields: [
+                  {
+                    type: "mrkdwn",
+                    text: "➡️ 📄 `0xd01a...e0ba`",
+                  },
+                  {
+                    type: "mrkdwn",
+                    text: "🔴 `-0.0156`  *AAVEETH*  `($27.7)`",
+                  },
+                ],
+              },
+              {
+                type: "section",
+                block_id: "row_4",
+                fields: [
+                  {
+                    type: "mrkdwn",
+                    text: "➡️ 📄 `0xd01a...e0ba`",
+                  },
+                  {
+                    type: "mrkdwn",
+                    text: "🔴 `-0.0156`  *AAVEETH*  `($27.7)`",
+                  },
+                ],
+              },
+              {
+                type: "section",
+                block_id: "row_5",
+                fields: [
+                  {
+                    type: "mrkdwn",
+                    text: "➡️ 📄 `0xd01a...e0ba`",
+                  },
+                  {
+                    type: "mrkdwn",
+                    text: "🔴 `-0.0156`  *AAVEETH*  `($27.7)`",
+                  },
+                ],
               },
             ],
           });
@@ -602,6 +693,7 @@ export function setupCommandHandlers(
 
         case "involved_addresses":
           // Get involved addresses from the original message
+          const originalMessage = body.message;
           let involvedAddresses = "No involved addresses available";
 
           if (
@@ -649,6 +741,66 @@ export function setupCommandHandlers(
           });
           break;
 
+        case "tag_teammate":
+          await client.chat.postMessage({
+            channel,
+            thread_ts: ts,
+            text: "Tag Teammate",
+            blocks: [
+              {
+                type: "section",
+                block_id: "title",
+                text: {
+                  type: "mrkdwn",
+                  text: "*Tag Teammate*",
+                },
+              },
+              {
+                type: "section",
+                block_id: "picker_row",
+                text: {
+                  type: "mrkdwn",
+                  text: "Select a Person…",
+                },
+                accessory: {
+                  type: "users_select",
+                  action_id: "select_user",
+                  placeholder: {
+                    type: "plain_text",
+                    text: "Select Person...",
+                  },
+                },
+              },
+              {
+                type: "actions",
+                block_id: "confirm_or_cancel",
+                elements: [
+                  {
+                    type: "button",
+                    action_id: "confirm_tag",
+                    text: {
+                      type: "plain_text",
+                      text: "✅ Confirm",
+                      emoji: true,
+                    },
+                    value: "confirm_tag",
+                  },
+                  {
+                    type: "button",
+                    action_id: "cancel_tag",
+                    text: {
+                      type: "plain_text",
+                      text: "❌ Cancel",
+                      emoji: true,
+                    },
+                    value: "cancel_tag",
+                  },
+                ],
+              },
+            ],
+          });
+          break;
+
         default:
           console.log(`Unknown more info option: ${selectedValue}`);
       }
@@ -664,6 +816,104 @@ export function setupCommandHandlers(
         thread_ts: ts,
         text: `📋 More info for ${selectedValue} requested by <@${body.user.id}>`,
       });
+    }
+  });
+
+  // Handle user selection in tag teammate flow (just acknowledge, no action needed)
+  app.action("select_user", async ({ ack }) => {
+    await ack();
+  });
+
+  // Handle confirm tag button - actually tag the selected user
+  app.action("confirm_tag", async ({ ack, body, client }) => {
+    await ack();
+    const channel = body.channel?.id;
+    const ts = body.message?.ts;
+
+    try {
+      // Find the selected user from the message's blocks
+      const pickerBlock = body.message.blocks.find(
+        (block) => block.block_id === "picker_row"
+      );
+
+      let selectedUserId = null;
+      if (pickerBlock?.accessory?.selected_user) {
+        selectedUserId = pickerBlock.accessory.selected_user;
+      }
+
+      if (selectedUserId) {
+        // Post a message tagging the user
+        await client.chat.postMessage({
+          channel,
+          thread_ts: ts,
+          text: `<@${selectedUserId}> - You've been tagged by <@${body.user.id}> to review this transaction.`,
+        });
+
+        // Update the original message to show confirmation
+        await client.chat.update({
+          channel,
+          ts: body.message.ts,
+          text: "Tag Teammate",
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `✅ *Tagged <@${selectedUserId}>* by <@${body.user.id}>`,
+              },
+            },
+          ],
+        });
+
+        console.log(
+          `✅ User ${body.user.id} tagged ${selectedUserId} in channel ${channel}`
+        );
+      } else {
+        // No user selected
+        await client.chat.postMessage({
+          channel,
+          thread_ts: ts,
+          text: "❌ Please select a person first before confirming.",
+        });
+      }
+    } catch (error) {
+      console.error("Error confirming tag:", error);
+      await client.chat.postMessage({
+        channel,
+        thread_ts: ts,
+        text: `❌ Failed to tag teammate: ${error.message}`,
+      });
+    }
+  });
+
+  // Handle cancel tag button
+  app.action("cancel_tag", async ({ ack, body, client }) => {
+    await ack();
+    const channel = body.channel?.id;
+    const ts = body.message?.ts;
+
+    try {
+      // Update the message to show cancellation
+      await client.chat.update({
+        channel,
+        ts,
+        text: "Tag Teammate",
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `❌ *Tag cancelled* by <@${body.user.id}>`,
+            },
+          },
+        ],
+      });
+
+      console.log(
+        `❌ User ${body.user.id} cancelled tagging in channel ${channel}`
+      );
+    } catch (error) {
+      console.error("Error cancelling tag:", error);
     }
   });
 }
