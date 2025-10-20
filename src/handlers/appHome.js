@@ -5,6 +5,111 @@ import { getUserWebhookURL, translateUserId } from "../utils/helpers.js";
 // Track home view failures to disable if consistently failing
 let homeViewFailures = 0;
 
+/**
+ * Helper function to build the home view content
+ */
+async function buildHomeView(userId, store, updateStoreWithChangeDetection) {
+  const dest = store.destinations[userId];
+
+  return {
+    type: "home",
+    blocks: [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "🤖 Hypernative Alerts Bot",
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text:
+            dest && dest.channel
+              ? `✅ *You're all set up!*\n\nYour alerts will be posted to <#${
+                  dest.channel
+                }>.\n\nYour webhook URL:\n\`${await getUserWebhookURL(
+                  userId,
+                  null,
+                  store,
+                  updateStoreWithChangeDetection
+                )}\``
+              : "👋 *Welcome!* I help you receive Hypernative alerts in Slack.\n\nGet started by configuring where you want your alerts to go.",
+        },
+      },
+      {
+        type: "actions",
+        elements:
+          dest && dest.channel
+            ? [
+                {
+                  type: "button",
+                  text: {
+                    type: "plain_text",
+                    text: "⚙️ Update Configuration",
+                  },
+                  action_id: "open_setup_modal",
+                },
+              ]
+            : [
+                {
+                  type: "button",
+                  text: { type: "plain_text", text: "🚀 Get Started" },
+                  action_id: "open_setup_modal",
+                  style: "primary",
+                },
+              ],
+      },
+      {
+        type: "divider",
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: '💬 *You can also talk to me!*\nJust send me a DM with:\n• "hi" or "hello" to get started\n• "webhook" or "url" to get your webhook URL\n• "help" to see what I can do',
+        },
+      },
+    ],
+  };
+}
+
+/**
+ * Helper function to publish/update the home view for a user
+ * This can be called from anywhere to force a re-render
+ */
+export async function publishHomeView(
+  client,
+  userId,
+  store,
+  updateStoreWithChangeDetection
+) {
+  try {
+    console.log(`🔄 Publishing home view for user: ${userId}`);
+
+    const homeView = await buildHomeView(
+      userId,
+      store,
+      updateStoreWithChangeDetection
+    );
+
+    await client.views.publish({
+      user_id: userId,
+      view: homeView,
+    });
+
+    console.log(`✅ Home view published successfully for user: ${userId}`);
+    return { success: true };
+  } catch (error) {
+    console.error(
+      `❌ Failed to publish home view for user ${userId}:`,
+      error.message
+    );
+    return { success: false, error: error.message };
+  }
+}
+
 export function setupAppHomeHandler(
   app,
   store,
@@ -35,7 +140,7 @@ export function setupAppHomeHandler(
     // Check if home view is disabled due to repeated failures
     if (homeViewFailures >= MAX_HOME_VIEW_FAILURES) {
       console.log(
-        "🚫 Home view disabled due to repeated failures. Use DM or slash commands instead."
+        "🚫 Home view disabled due to repeated failures. Users should use DM instead."
       );
       return;
     }
@@ -91,71 +196,12 @@ export function setupAppHomeHandler(
     // Translate global user ID to local ID if needed
     const localUserId = await translateUserId(client, userId);
 
-    const dest = store.destinations[localUserId];
-
     try {
-      const homeView = {
-        type: "home",
-        blocks: [
-          {
-            type: "header",
-            text: {
-              type: "plain_text",
-              text: "🤖 Hypernative Alerts Bot",
-            },
-          },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text:
-                dest && dest.channel
-                  ? `✅ *You're all set up!*\n\nYour alerts will be posted to <#${
-                      dest.channel
-                    }>.\n\nYour webhook URL:\n\`${await getUserWebhookURL(
-                      userId,
-                      null,
-                      store,
-                      updateStoreWithChangeDetection
-                    )}\``
-                  : "👋 *Welcome!* I help you receive Hypernative alerts in Slack.\n\nGet started by configuring where you want your alerts to go.",
-            },
-          },
-          {
-            type: "actions",
-            elements:
-              dest && dest.channel
-                ? [
-                    {
-                      type: "button",
-                      text: {
-                        type: "plain_text",
-                        text: "⚙️ Update Configuration",
-                      },
-                      action_id: "open_setup_modal",
-                    },
-                  ]
-                : [
-                    {
-                      type: "button",
-                      text: { type: "plain_text", text: "🚀 Get Started" },
-                      action_id: "open_setup_modal",
-                      style: "primary",
-                    },
-                  ],
-          },
-          {
-            type: "divider",
-          },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: '💬 *You can also talk to me!*\nJust send me a DM with:\n• "hi" or "hello" to get started\n• "webhook" or "url" to get your webhook URL\n• "help" to see what I can do',
-            },
-          },
-        ],
-      };
+      const homeView = await buildHomeView(
+        localUserId,
+        store,
+        updateStoreWithChangeDetection
+      );
 
       // Set user workspace info for comparison
       userWorkspaceInfo = {
@@ -258,7 +304,7 @@ export function setupAppHomeHandler(
       // If we've hit the failure limit, disable home view
       if (homeViewFailures >= MAX_HOME_VIEW_FAILURES) {
         console.log(
-          "🚫 Home view disabled due to repeated failures. Users should use DM or slash commands instead."
+          "🚫 Home view disabled due to repeated failures. Users should use DM instead."
         );
       }
     }

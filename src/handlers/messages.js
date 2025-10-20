@@ -264,7 +264,7 @@ export function setupMessageHandlers(
             type: "section",
             text: {
               type: "mrkdwn",
-              text: "💬 *You can also use slash commands:*\n• `/hypernative-setup` - Configure alerts\n• `/hypernative-config` - View current settings",
+              text: "🏠 *You can also:*\nVisit the bot's *Home* tab to configure alerts and view your settings anytime",
             },
           },
         ],

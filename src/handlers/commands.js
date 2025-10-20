@@ -1,9 +1,29 @@
-// Slash commands and interactive handlers
+// Interactive handlers (buttons, modals, dropdowns)
+import { gunzipSync } from "zlib";
 import {
   getUserWebhookURL,
   translateUserId,
   validateChannelAccess,
 } from "../utils/helpers.js";
+import { publishHomeView } from "./appHome.js";
+
+// Helper function to decompress RI data from metadata
+function decompressRIMetadata(metadata) {
+  if (!metadata || !metadata.compressed) {
+    // Legacy uncompressed data or direct riskInsight object
+    return metadata?.riskInsight || metadata;
+  }
+
+  try {
+    const buffer = Buffer.from(metadata.data, "base64");
+    const decompressed = gunzipSync(buffer);
+    const jsonStr = decompressed.toString("utf-8");
+    return JSON.parse(jsonStr);
+  } catch (error) {
+    console.error("Failed to decompress metadata:", error);
+    return null;
+  }
+}
 
 export function setupCommandHandlers(
   app,
@@ -226,143 +246,25 @@ export function setupCommandHandlers(
             type: "section",
             text: {
               type: "mrkdwn",
-              text: "📝 *Instructions:*\n• Use this URL in your Hypernative configuration\n• Only you can use this URL - it routes alerts to your chosen destination\n• Use `/hypernative-config` to view your settings anytime",
+              text: "📝 *Instructions:*\n• Use this URL in your Hypernative configuration\n• Only you can use this URL - it routes alerts to your chosen destination\n• Visit the *Home* tab to view or update your settings anytime",
             },
           },
         ],
       });
+
+      // Force update the App Home to reflect the new configuration
+      await publishHomeView(
+        client,
+        userId,
+        store,
+        updateStoreWithChangeDetection
+      );
+      console.log(
+        `🔄 App Home refreshed for user: ${userId} after configuration update`
+      );
     } catch (e) {
       console.error("Post setup ack failed:", e);
     }
-  });
-
-  // Action: setup DM destination directly - DISABLED
-  // app.action("setup_dm_destination", async ({ ack, body, client }) => {
-  //   // DM functionality has been removed - users must use channels only
-  //   await ack();
-  //   const originalUserId = body.user.id;
-  //
-  //   await client.chat.postMessage({
-  //     channel: originalUserId,
-  //     text: "❌ DM setup is no longer available",
-  //     blocks: [
-  //       {
-  //         type: "section",
-  //         text: {
-  //           type: "mrkdwn",
-  //           text: "❌ *DM setup is no longer available*\n\nPlease use the channel setup instead.",
-  //         },
-  //       },
-  //       {
-  //         type: "actions",
-  //         elements: [
-  //           {
-  //             type: "button",
-  //             text: { type: "plain_text", text: "Set Up Channel" },
-  //             action_id: "open_setup_modal",
-  //           },
-  //         ],
-  //       },
-  //     ],
-  //   });
-  // });
-
-  // Slash command: /hypernative-setup
-  app.command("/hypernative-setup", async ({ ack, body, client }) => {
-    await ack();
-
-    // Use the client provided by Bolt (already has correct token)
-    await client.chat.postMessage({
-      channel: body.user_id,
-      text: "Click to set up destination",
-      blocks: [
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: "Let's set your destination for Hypernative alerts.",
-          },
-        },
-        {
-          type: "actions",
-          elements: [
-            {
-              type: "button",
-              text: { type: "plain_text", text: "Open setup" },
-              action_id: "open_setup_modal",
-            },
-          ],
-        },
-      ],
-    });
-  });
-
-  // Slash command: /hypernative-config - show user's current configuration
-  app.command("/hypernative-config", async ({ ack, body, client }) => {
-    await ack();
-    const userId = body.user_id;
-    const dest = store.destinations[userId];
-
-    if (!dest || !dest.channel) {
-      // Use the client provided by Bolt (already has correct token)
-      await client.chat.postMessage({
-        channel: userId,
-        text: "❌ Not configured yet",
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: "You haven't configured your Hypernative alerts yet. Use `/hypernative-setup` to get started!",
-            },
-          },
-        ],
-      });
-      return;
-    }
-
-    const webhookURL = await getUserWebhookURL(
-      userId,
-      null,
-      store,
-      updateStoreWithChangeDetection
-    );
-
-    // Use the client provided by Bolt (already has correct token)
-    await client.chat.postMessage({
-      channel: userId,
-      text: "Your Hypernative configuration",
-      blocks: [
-        {
-          type: "header",
-          text: {
-            type: "plain_text",
-            text: "📊 Your Hypernative Configuration",
-          },
-        },
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: `*Destination:* ${
-              dest.type === "dm"
-                ? "Direct Message with the bot"
-                : `<#${dest.channel}>`
-            }\n*Your Webhook URL:*\n\`${webhookURL}\``,
-          },
-        },
-        {
-          type: "actions",
-          elements: [
-            {
-              type: "button",
-              text: { type: "plain_text", text: "Update Configuration" },
-              action_id: "open_setup_modal",
-            },
-          ],
-        },
-      ],
-    });
   });
 
   // --- Accept / Deny actions ---
@@ -473,271 +375,554 @@ export function setupCommandHandlers(
     const channel = body.channel?.id;
     const ts = body.message?.ts;
 
+    // Retrieve and decompress the RI data from message metadata
+    const eventPayload = body.message?.metadata?.event_payload;
+    const riskInsight = decompressRIMetadata(eventPayload);
+
+    console.log(
+      `🔍 Retrieved RI data from metadata for ${selectedValue}:`,
+      riskInsight ? "Available" : "Not available"
+    );
+    if (riskInsight) {
+      console.log(
+        `🔍 TriggeringRis count:`,
+        riskInsight.triggeringRis?.length || 0
+      );
+    }
+
     try {
       switch (selectedValue) {
         case "findings":
+          // Extract information from triggeringRis
+          let findingsBlocks = [];
+
+          if (
+            riskInsight?.triggeringRis &&
+            riskInsight.triggeringRis.length > 0
+          ) {
+            // Process each triggering RI
+            riskInsight.triggeringRis.forEach((triggeringRi, index) => {
+              // Get severity with emoji
+              const severityEmoji = {
+                Critical: ":red_circle:",
+                High: ":warning:",
+                Medium: ":large_orange_diamond:",
+                Low: ":large_blue_diamond:",
+                Info: ":information_source:",
+                Warn: ":warning:",
+              };
+              const severity = triggeringRi.severity || "Unknown";
+              const severityIcon = severityEmoji[severity] || ":grey_question:";
+
+              // Add context block with severity
+              findingsBlocks.push({
+                type: "context",
+                elements: [
+                  {
+                    type: "mrkdwn",
+                    text: `${severityIcon} *${severity}*`,
+                  },
+                ],
+              });
+
+              // Add headline/details section
+              if (triggeringRi.details) {
+                findingsBlocks.push({
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: triggeringRi.details,
+                  },
+                });
+              }
+
+              // Build fields for the details row
+              const fields = [];
+
+              // Extract context details or use detailsParams
+              const hasContext =
+                triggeringRi.context && triggeringRi.context.length > 0;
+              const hasDetailsParams = triggeringRi.detailsParams;
+
+              let fromValue, toValue, valueAmount;
+
+              if (hasContext) {
+                const fromContext = triggeringRi.context.find(
+                  (c) => c.title === "From"
+                );
+                const toContext = triggeringRi.context.find(
+                  (c) => c.title === "To"
+                );
+                const valueContext = triggeringRi.context.find(
+                  (c) => c.title === "Value"
+                );
+
+                fromValue = fromContext?.value;
+                toValue = toContext?.value;
+                valueAmount = valueContext?.value;
+              }
+
+              // Fallback to detailsParams if context not available
+              if (!fromValue && hasDetailsParams) {
+                fromValue = triggeringRi.detailsParams.fromAddress;
+                toValue = triggeringRi.detailsParams.toAddress;
+              }
+
+              // Add "From" field
+              if (fromValue) {
+                const shortFrom =
+                  fromValue.length > 10
+                    ? `${fromValue.substring(0, 6)}...${fromValue.substring(
+                        fromValue.length - 4
+                      )}`
+                    : fromValue;
+                fields.push({
+                  type: "mrkdwn",
+                  text: `*From:* \`${shortFrom}\``,
+                });
+              }
+
+              // Add "To" field
+              if (toValue) {
+                const shortTo =
+                  toValue.length > 10
+                    ? `${toValue.substring(0, 6)}...${toValue.substring(
+                        toValue.length - 4
+                      )}`
+                    : toValue;
+
+                // Check if this is a scammer address
+                const isScammer = triggeringRi.involvedAssets?.some(
+                  (asset) =>
+                    asset.address === toValue &&
+                    (asset.involvement?.toLowerCase().includes("scam") ||
+                      asset.involvement?.toLowerCase().includes("phishing"))
+                );
+
+                fields.push({
+                  type: "mrkdwn",
+                  text: `*To:* ${
+                    isScammer ? ":rotating_light:" : ""
+                  } \`${shortTo}\`${isScammer ? " *(Scammer)*" : ""}`,
+                });
+              }
+
+              // Add value if available
+              if (valueAmount) {
+                fields.push({
+                  type: "mrkdwn",
+                  text: `*Value:* ${valueAmount}`,
+                });
+              }
+
+              // Add fields section if we have any fields
+              if (fields.length > 0) {
+                findingsBlocks.push({
+                  type: "section",
+                  fields: fields,
+                });
+              }
+
+              // Add divider between multiple findings (except after the last one)
+              if (index < riskInsight.triggeringRis.length - 1) {
+                findingsBlocks.push({
+                  type: "divider",
+                });
+              }
+            });
+          } else {
+            // Fallback if no triggeringRis data available
+            findingsBlocks = [
+              {
+                type: "context",
+                elements: [
+                  {
+                    type: "mrkdwn",
+                    text: ":warning: *No detailed findings available*",
+                  },
+                ],
+              },
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: "Detailed risk information is not available for this alert.",
+                },
+              },
+            ];
+          }
+
           await client.chat.postMessage({
             channel,
             thread_ts: ts,
             text: "Findings details",
-            blocks: [
-              {
-                type: "section",
-                text: {
-                  type: "mrkdwn",
-                  text: ":warning: *Warn*",
-                },
-              },
-              {
-                type: "section",
-                text: {
-                  type: "mrkdwn",
-                  text: "An attacker *0x12354* already has permission to withdraw your *DogUSD* tokens, and most likely will take these tokens immediately after.",
-                },
-              },
-              {
-                type: "section",
-                text: {
-                  type: "mrkdwn",
-                  text: "*You will send:* :money_with_wings: *1000 USDC*\u2003\u2003*You will receive:* :inbox_tray: *1000 USDC*\u2003\u2003*Scammer's address:* *0x12354*",
-                },
-              },
-              {
-                type: "actions",
-                elements: [
-                  {
-                    type: "button",
-                    text: {
-                      type: "plain_text",
-                      text: "More Info",
-                      emoji: true,
-                    },
-                    action_id: "more_info",
-                    value: "more_info_clicked",
-                  },
-                ],
-              },
-            ],
+            blocks: findingsBlocks,
           });
           break;
 
         case "interpretation_summary":
+          let summaryBlocks = [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "*Interpretation Summary*",
+              },
+            },
+          ];
+
+          if (riskInsight) {
+            // Add the main interpretation summary
+            if (riskInsight.interpretationSummary) {
+              summaryBlocks.push({
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: riskInsight.interpretationSummary,
+                },
+              });
+            }
+
+            // Add parsed actions if available
+            if (
+              riskInsight.parsedActions &&
+              riskInsight.parsedActions.length > 0
+            ) {
+              summaryBlocks.push({
+                type: "divider",
+              });
+              summaryBlocks.push({
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: "*Parsed Actions:*",
+                },
+              });
+
+              riskInsight.parsedActions.forEach((action) => {
+                let actionText = `*${
+                  action.displayType || action.parsedAction
+                }*`;
+
+                if (action.displayAmount) {
+                  actionText += `\n• Amount: ${action.displayAmount}`;
+                }
+
+                if (action.asset) {
+                  actionText += `\n• Asset: ${action.asset}`;
+                }
+
+                if (
+                  action.displayAddresses &&
+                  action.displayAddresses.length > 0
+                ) {
+                  action.displayAddresses.forEach((addr) => {
+                    const shortAddr =
+                      addr.address?.length > 10
+                        ? `${addr.address.substring(
+                            0,
+                            6
+                          )}...${addr.address.substring(
+                            addr.address.length - 4
+                          )}`
+                        : addr.address;
+                    const label = addr.alias || shortAddr;
+                    actionText += `\n• ${addr.role}: \`${label}\``;
+                  });
+                }
+
+                summaryBlocks.push({
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: actionText,
+                  },
+                });
+              });
+            }
+
+            // Add transaction hash if available
+            if (riskInsight.txnHash) {
+              summaryBlocks.push({
+                type: "divider",
+              });
+              const shortHash =
+                riskInsight.txnHash.length > 20
+                  ? `${riskInsight.txnHash.substring(
+                      0,
+                      10
+                    )}...${riskInsight.txnHash.substring(
+                      riskInsight.txnHash.length - 8
+                    )}`
+                  : riskInsight.txnHash;
+              summaryBlocks.push({
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `*Transaction Hash:* \`${shortHash}\``,
+                },
+              });
+            }
+          } else {
+            summaryBlocks.push({
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "No interpretation summary available.",
+              },
+            });
+          }
+
           await client.chat.postMessage({
             channel,
             thread_ts: ts,
             text: "Interpretation Summary",
-            blocks: [
-              {
-                type: "section",
-                block_id: "title",
-                text: {
-                  type: "mrkdwn",
-                  text: "*Interpretation Summary*",
-                },
-              },
-              {
-                type: "section",
-                block_id: "line_swap",
-                text: {
-                  type: "mrkdwn",
-                  text: "Swap 💲 *USDC* with 🟢 *USDT*",
-                },
-              },
-              {
-                type: "section",
-                block_id: "line_approval",
-                text: {
-                  type: "mrkdwn",
-                  text: "Create *Approval* for `0x1234...4567` *(Phishing-Contract)* for *$1M*",
-                },
-              },
-              {
-                type: "divider",
-              },
-              {
-                type: "actions",
-                block_id: "tx_actions",
-                elements: [
-                  {
-                    type: "button",
-                    action_id: "tx_accept",
-                    text: {
-                      type: "plain_text",
-                      text: "✅ Accept Transaction",
-                      emoji: true,
-                    },
-                    value: "accept_tx_0x1234",
-                  },
-                  {
-                    type: "button",
-                    action_id: "tx_deny",
-                    text: {
-                      type: "plain_text",
-                      text: "❌ Deny Transaction",
-                      emoji: true,
-                    },
-                    value: "deny_tx_0x1234",
-                  },
-                  {
-                    type: "button",
-                    action_id: "tx_more_info",
-                    text: {
-                      type: "plain_text",
-                      text: "👁️ More Info",
-                      emoji: true,
-                    },
-                    value: "more_info_0x1234",
-                  },
-                ],
-              },
-            ],
+            blocks: summaryBlocks,
           });
           break;
 
         case "balance_changes":
+          let balanceBlocks = [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "*Balance Changes*",
+              },
+            },
+          ];
+
+          if (riskInsight) {
+            // Try to get balance changes from context
+            const balanceContext = riskInsight.context?.find(
+              (c) =>
+                c.title === "Balance Changed" ||
+                c.title === "From Balance Changed"
+            );
+
+            let balanceData = null;
+            if (balanceContext?.value) {
+              try {
+                balanceData = JSON.parse(balanceContext.value);
+              } catch (e) {
+                console.log("Failed to parse balance data:", e);
+              }
+            }
+
+            if (balanceData) {
+              // If balance data is an object with addresses as keys
+              if (
+                typeof balanceData === "object" &&
+                !Array.isArray(balanceData)
+              ) {
+                Object.entries(balanceData).forEach(([address, changes]) => {
+                  const shortAddr =
+                    address.length > 10
+                      ? `${address.substring(0, 6)}...${address.substring(
+                          address.length - 4
+                        )}`
+                      : address;
+
+                  // Find the involvement type for this address
+                  const asset = riskInsight.involvedAssets?.find(
+                    (a) => a.address === address
+                  );
+                  const involvement = asset?.involvementType || "";
+
+                  balanceBlocks.push({
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: `*Address:* \`${shortAddr}\` ${
+                        involvement ? `_${involvement}_` : ""
+                      }`,
+                    },
+                  });
+
+                  // Process each balance change
+                  const changeArray = Array.isArray(changes)
+                    ? changes
+                    : [changes];
+                  changeArray.forEach((change) => {
+                    const isNegative =
+                      change.change_type === "send" ||
+                      parseFloat(change.amount) < 0;
+                    const emoji = isNegative ? "🔴" : "🟢";
+                    const sign =
+                      isNegative && !change.amount.toString().startsWith("-")
+                        ? "-"
+                        : "";
+                    const usdValue = change.usd_value
+                      ? `($${Math.abs(parseFloat(change.usd_value)).toFixed(
+                          2
+                        )})`
+                      : "";
+
+                    balanceBlocks.push({
+                      type: "section",
+                      text: {
+                        type: "mrkdwn",
+                        text: `${emoji} \`${sign}${change.amount}\` *${change.token_symbol}* ${usdValue}`,
+                      },
+                    });
+                  });
+
+                  balanceBlocks.push({
+                    type: "divider",
+                  });
+                });
+              } else if (Array.isArray(balanceData)) {
+                // If balance data is an array
+                balanceData.forEach((change) => {
+                  const isNegative =
+                    change.change_type === "send" ||
+                    parseFloat(change.amount) < 0;
+                  const emoji = isNegative ? "🔴" : "🟢";
+                  const sign =
+                    isNegative && !change.amount.toString().startsWith("-")
+                      ? "-"
+                      : "";
+                  const usdValue = change.usd_value
+                    ? `($${Math.abs(parseFloat(change.usd_value)).toFixed(2)})`
+                    : "";
+
+                  balanceBlocks.push({
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: `${emoji} \`${sign}${change.amount}\` *${change.token_symbol}* ${usdValue}`,
+                    },
+                  });
+                });
+              }
+            } else {
+              // Fallback to parsed actions
+              if (
+                riskInsight.parsedActions &&
+                riskInsight.parsedActions.length > 0
+              ) {
+                riskInsight.parsedActions.forEach((action) => {
+                  if (action.displayAmount) {
+                    balanceBlocks.push({
+                      type: "section",
+                      text: {
+                        type: "mrkdwn",
+                        text: `*${action.displayType || "Transfer"}:* ${
+                          action.displayAmount
+                        }`,
+                      },
+                    });
+                  }
+                });
+              } else {
+                balanceBlocks.push({
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: "No balance change information available.",
+                  },
+                });
+              }
+            }
+          } else {
+            balanceBlocks.push({
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "No balance change information available.",
+              },
+            });
+          }
+
           await client.chat.postMessage({
             channel,
             thread_ts: ts,
             text: "Balance Changes",
-            blocks: [
-              {
-                type: "section",
-                block_id: "header",
-                fields: [
-                  {
-                    type: "mrkdwn",
-                    text: "*Address*",
-                  },
-                  {
-                    type: "mrkdwn",
-                    text: "*Transfer*",
-                  },
-                ],
-              },
-              {
-                type: "divider",
-              },
-              {
-                type: "section",
-                block_id: "row_1",
-                fields: [
-                  {
-                    type: "mrkdwn",
-                    text: "➡️ 📄 `0xd01a...e0ba`  _ORIGIN_",
-                  },
-                  {
-                    type: "mrkdwn",
-                    text: "🔴 `-0.0156`  *AAVEETH*  `($27.7)`",
-                  },
-                ],
-              },
-              {
-                type: "section",
-                block_id: "row_2",
-                fields: [
-                  {
-                    type: "mrkdwn",
-                    text: "➡️ 📄 `0xd01a...e0ba`",
-                  },
-                  {
-                    type: "mrkdwn",
-                    text: "🟢 `+0.0156`  *AAVEETH*  `($27.7)`",
-                  },
-                ],
-              },
-              {
-                type: "section",
-                block_id: "row_3",
-                fields: [
-                  {
-                    type: "mrkdwn",
-                    text: "➡️ 📄 `0xd01a...e0ba`",
-                  },
-                  {
-                    type: "mrkdwn",
-                    text: "🔴 `-0.0156`  *AAVEETH*  `($27.7)`",
-                  },
-                ],
-              },
-              {
-                type: "section",
-                block_id: "row_4",
-                fields: [
-                  {
-                    type: "mrkdwn",
-                    text: "➡️ 📄 `0xd01a...e0ba`",
-                  },
-                  {
-                    type: "mrkdwn",
-                    text: "🔴 `-0.0156`  *AAVEETH*  `($27.7)`",
-                  },
-                ],
-              },
-              {
-                type: "section",
-                block_id: "row_5",
-                fields: [
-                  {
-                    type: "mrkdwn",
-                    text: "➡️ 📄 `0xd01a...e0ba`",
-                  },
-                  {
-                    type: "mrkdwn",
-                    text: "🔴 `-0.0156`  *AAVEETH*  `($27.7)`",
-                  },
-                ],
-              },
-            ],
+            blocks: balanceBlocks,
           });
           break;
 
         case "involved_addresses":
-          // Get involved addresses from the original message
-          const originalMessage = body.message;
-          let involvedAddresses = "No involved addresses available";
+          let addressBlocks = [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "*Involved Addresses*",
+              },
+            },
+          ];
 
           if (
-            originalMessage.attachments &&
-            originalMessage.attachments[0]?.blocks
+            riskInsight?.involvedAssets &&
+            riskInsight.involvedAssets.length > 0
           ) {
-            const textBlock = originalMessage.attachments[0].blocks.find(
-              (block) =>
-                block.type === "section" &&
-                block.text?.text?.includes("*Source:*")
-            );
-            if (textBlock) {
-              const sourceMatch = textBlock.text.text.match(
-                /\*Source:\*\s*(.*?)(?=\n\*|$)/s
-              );
-              const destMatch = textBlock.text.text.match(
-                /\*Destination:\*\s*(.*?)(?=\n\*|$)/s
-              );
+            // Group addresses by involvement type
+            const addressGroups = {};
 
-              let addresses = [];
-              if (sourceMatch)
-                addresses.push(`*Source:* ${sourceMatch[1].trim()}`);
-              if (destMatch)
-                addresses.push(`*Destination:* ${destMatch[1].trim()}`);
-
-              if (addresses.length > 0) {
-                involvedAddresses = addresses.join("\n");
+            riskInsight.involvedAssets.forEach((asset) => {
+              const involvement = asset.involvementType || "Unknown";
+              if (!addressGroups[involvement]) {
+                addressGroups[involvement] = [];
               }
+              addressGroups[involvement].push(asset);
+            });
+
+            // Display each group
+            Object.entries(addressGroups).forEach(([involvement, assets]) => {
+              addressBlocks.push({
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `*${involvement}:*`,
+                },
+              });
+
+              assets.forEach((asset) => {
+                const shortAddr =
+                  asset.address?.length > 10
+                    ? `${asset.address.substring(
+                        0,
+                        6
+                      )}...${asset.address.substring(asset.address.length - 4)}`
+                    : asset.address;
+
+                const typeIcon = asset.type === "Wallet" ? "👤" : "📄";
+                const chain = asset.chain ? ` (${asset.chain})` : "";
+
+                addressBlocks.push({
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: `${typeIcon} \`${shortAddr}\`${chain}`,
+                  },
+                });
+              });
+
+              addressBlocks.push({
+                type: "divider",
+              });
+            });
+
+            // Remove last divider
+            if (addressBlocks[addressBlocks.length - 1].type === "divider") {
+              addressBlocks.pop();
             }
+          } else {
+            addressBlocks.push({
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "No involved addresses available.",
+              },
+            });
           }
 
           await client.chat.postMessage({
             channel,
             thread_ts: ts,
             text: "Involved Addresses",
-            blocks: [
-              {
-                type: "section",
-                text: {
-                  type: "mrkdwn",
-                  text: `*Involved Addresses:*\n\n${involvedAddresses}`,
-                },
-              },
-            ],
+            blocks: addressBlocks,
           });
           break;
 

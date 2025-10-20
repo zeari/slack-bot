@@ -1,6 +1,7 @@
 // Webhook handlers for receiving Hypernative alerts
 import express from "express";
 import { WebClient } from "@slack/web-api";
+import { gzipSync, gunzipSync } from "zlib";
 import { EXTERNAL_WEBHOOK_TOKEN } from "../config/index.js";
 import { summarizeBlocks } from "../utils/messageFormatter.js";
 import {
@@ -13,6 +14,109 @@ import {
   getValidToken,
 } from "../utils/helpers.js";
 import { SLACK_CLIENT_ID, SLACK_CLIENT_SECRET } from "../config/index.js";
+
+// Helper function to compress RI data for metadata
+function compressRIMetadata(riskInsight) {
+  // Include all relevant fields without initial trimming
+  const fullRI = {
+    id: riskInsight.id,
+    chain: riskInsight.chain,
+    name: riskInsight.name,
+    category: riskInsight.category,
+    severity: riskInsight.severity,
+    timestamp: riskInsight.timestamp,
+    details: riskInsight.details,
+    involvedAssets: riskInsight.involvedAssets,
+    riskTypeId: riskInsight.riskTypeId,
+    riskTypeDescription: riskInsight.riskTypeDescription,
+    txnHash: riskInsight.txnHash,
+    context: riskInsight.context,
+    triggeringRis: riskInsight.triggeringRis
+      ? riskInsight.triggeringRis.map((tri) => ({
+          agent: tri.agent,
+          context: tri.context,
+          details: tri.details,
+          addresses: tri.addresses,
+          timestamp: tri.timestamp,
+          involvedAssets: tri.involvedAssets,
+          detailsParams: tri.detailsParams,
+          detailsParamsType: tri.detailsParamsType,
+          id: tri.id,
+          riskTypeId: tri.riskTypeId,
+          severity: tri.severity,
+          category: tri.category,
+          name: tri.name,
+          riskTypeDescription: tri.riskTypeDescription,
+          // Exclude txevent and other large fields
+        }))
+      : [],
+    parsedActions: riskInsight.parsedActions,
+    interpretationSummary: riskInsight.interpretationSummary,
+  };
+
+  // Convert to JSON and compress with gzip
+  const jsonStr = JSON.stringify(fullRI);
+  const compressed = gzipSync(jsonStr);
+  const base64 = compressed.toString("base64");
+
+  console.log(
+    `📦 Compressed metadata: ${jsonStr.length} chars → ${
+      base64.length
+    } chars (${Math.round(
+      (base64.length / jsonStr.length) * 100
+    )}% of original)`
+  );
+
+  // Check if compressed version fits in Slack's limit
+  if (base64.length > 2800) {
+    console.log(
+      `⚠️ Compressed metadata still too large (${base64.length} chars), trimming...`
+    );
+
+    // Remove context from triggeringRis
+    if (fullRI.triggeringRis) {
+      fullRI.triggeringRis = fullRI.triggeringRis.map((tri) => ({
+        ...tri,
+        context: undefined,
+      }));
+    }
+
+    // Try again with trimmed data
+    const jsonStr2 = JSON.stringify(fullRI);
+    const compressed2 = gzipSync(jsonStr2);
+    const base64_2 = compressed2.toString("base64");
+
+    console.log(`✂️ Trimmed and recompressed: ${base64_2.length} chars`);
+
+    return {
+      compressed: true,
+      data: base64_2,
+    };
+  }
+
+  return {
+    compressed: true,
+    data: base64,
+  };
+}
+
+// Helper function to decompress RI data from metadata
+function decompressRIMetadata(metadata) {
+  if (!metadata || !metadata.compressed) {
+    // Legacy uncompressed data
+    return metadata;
+  }
+
+  try {
+    const buffer = Buffer.from(metadata.data, "base64");
+    const decompressed = gunzipSync(buffer);
+    const jsonStr = decompressed.toString("utf-8");
+    return JSON.parse(jsonStr);
+  } catch (error) {
+    console.error("Failed to decompress metadata:", error);
+    return null;
+  }
+}
 
 // External webhook to receive Hypernative POSTs
 export function setupWebhookRoutes(
@@ -61,7 +165,7 @@ export function setupWebhookRoutes(
           return res.status(404).json({
             ok: false,
             error: "user_not_configured",
-            message: "User needs to run /hypernative-setup first",
+            message: "User needs to configure alerts via the app Home tab",
           });
         }
 
@@ -209,6 +313,8 @@ export function setupWebhookRoutes(
             JSON.stringify(alertData, null, 2)
           );
 
+          const compressedRI = compressRIMetadata(riskInsight);
+
           post = await workspaceClient.chat.postMessage({
             channel: dest.channel,
             text: "Hypernative transaction alert",
@@ -218,7 +324,14 @@ export function setupWebhookRoutes(
                 blocks: alertData.blocks,
               },
             ],
+            metadata: {
+              event_type: "hypernative_alert",
+              event_payload: compressedRI,
+            },
           });
+          console.log(
+            `💾 Stored RI data in message metadata for ${post.channel}:${post.ts}`
+          );
         } catch (error) {
           // Handle token expiration specifically
           if (isTokenExpiredError(error)) {
@@ -269,6 +382,7 @@ export function setupWebhookRoutes(
               );
 
               // Retry posting the message
+              const compressedRI = compressRIMetadata(riskInsight);
               post = await workspaceClient.chat.postMessage({
                 channel: dest.channel,
                 text: "Hypernative transaction alert",
@@ -278,7 +392,14 @@ export function setupWebhookRoutes(
                     blocks: alertData.blocks,
                   },
                 ],
+                metadata: {
+                  event_type: "hypernative_alert",
+                  event_payload: compressedRI,
+                },
               });
+              console.log(
+                `💾 Stored RI data in message metadata for retry ${post.channel}:${post.ts}`
+              );
             } catch (joinError) {
               console.error(
                 `❌ Failed to join channel ${dest.channel}:`,

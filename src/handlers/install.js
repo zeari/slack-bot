@@ -44,24 +44,24 @@ export function setupInstallRoutes(
           <h3>Features:</h3>
           <div class="feature">Personal webhook URLs for each user</div>
           <div class="feature">Configurable alert destinations</div>
-          <div class="feature">Interactive setup via DM or slash commands</div>
+          <div class="feature">Interactive setup via App Home or DM</div>
           <div class="feature">Accept/Deny transaction buttons</div>
-          <div class="feature">App Home interface (when installed in your workspace)</div>
+          <div class="feature">Easy-to-use App Home interface</div>
           
           <a href="${installUrl}" class="install-btn">Add to Slack</a>
           
           <h3>After Installation:</h3>
-          <p>1. Use <code>/hypernative-setup</code> to configure your alerts</p>
-          <p>2. Or DM the bot with "hi" to get started</p>
+          <p>1. Click on the bot's profile and go to the <strong>Home</strong> tab</p>
+          <p>2. Click "Get Started" to configure your alerts</p>
           <p>3. Get your unique webhook URL and add it to Hypernative</p>
-          <p>4. Visit the bot's profile to access the App Home interface</p>
+          <p>4. Or DM the bot with "hi" to get started interactively</p>
           
-          <h3>Cross-Workspace Users:</h3>
-          <p>If you're from a different workspace, you can still use:</p>
+          <h3>Getting Started:</h3>
+          <p>After installing, you can:</p>
           <ul>
-              <li>Slash commands: <code>/hypernative-setup</code>, <code>/hypernative-config</code></li>
-              <li>Webhook functionality (once configured)</li>
-              <li>DM interactions (if accessible)</li>
+              <li>Visit the bot's <strong>Home</strong> tab for setup and configuration</li>
+              <li>DM the bot with "hi" or "help" for interactive assistance</li>
+              <li>Configure your alert destination and get your webhook URL</li>
           </ul>
       </body>
       </html>
@@ -196,8 +196,9 @@ export function setupInstallRoutes(
             
             <h3>Next Steps:</h3>
             <p>1. Go to your Slack workspace</p>
-            <p>2. Use <code>/hypernative-setup</code> to configure alerts</p>
-            <p>3. Or DM the bot with "hi" to get started</p>
+            <p>2. Click on the Hypernative bot profile and go to the <strong>Home</strong> tab</p>
+            <p>3. Click "Get Started" to configure your alerts</p>
+            <p>4. Or DM the bot with "hi" to get started interactively</p>
             
             <p><a href="slack://open">Open Slack</a></p>
         </body>
